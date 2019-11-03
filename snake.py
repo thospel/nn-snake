@@ -25,11 +25,11 @@ Usage:
   snake..py --version
 
 Options:
-  -h --help     Show this screen
-  --version     Show version
-  --fps=<fps>   Speed in knots [default: 40]
-  --pause=<pause> Pause <pause> seconds between games [default: 5]
-  -f <file>:    Used by jupyter, ignored
+  -h --help        Show this screen
+  --version        Show version
+  --fps=<fps>      Frames per second [default: 40]
+  --pause=<pause>  Pause for <pause> seconds after death [default: 5]
+  -f <file>:       Used by jupyter, ignored
 
 """
 from docopt import docopt
@@ -53,14 +53,24 @@ abs(-6)
 # +
 clock = pygame.time.Clock()
 
-WIDTH=40
-HEIGHT=40
+WIDTH=16
+HEIGHT=16
 EDGE=1
 AREA=WIDTH*HEIGHT
 BLOCK=20
 DRAW_BLOCK = BLOCK-2*EDGE
 SIZE2 = 1<<(AREA-1).bit_length()
 MASK = SIZE2-1
+
+VIEW_X0 = 4
+VIEW_Y0 = 4
+VIEW_WIDTH  = 2*VIEW_X0+1
+VIEW_HEIGHT = 2*VIEW_Y0+1
+
+INDEX_SNAKE = 0
+INDEX_APPLE = 1
+INDEX_WALL  = 2
+INDEX_MAX   = 3
 
 class Snake:
     WALL  = 255,255,255
@@ -72,6 +82,7 @@ class Snake:
 
     def __init__(self):
         self.field = np.ones((HEIGHT+2, WIDTH+2), np.float32)
+        self.view = np.zeros((VIEW_WIDTH, VIEW_HEIGHT, INDEX_MAX), np.float32)
         self.snake_body = [None]*SIZE2
         self.snake_head  = 0
         # Body length measures the snake without a head
@@ -105,12 +116,57 @@ class Snake:
     def tail(self):
         return self.snake_body[(self.snake_head - self.body_length) & MASK]
 
-    def new_snake(self):
+    def view_set(self, pos, index, value=1):
+        x,y = self.head()
+        x = pos[0] - x + VIEW_X0
+        if x < 0 or x >= VIEW_WIDTH:
+            return
+        y = pos[1] - y + VIEW_Y0
+        if y < 0 or y >= VIEW_HEIGHT:
+            return
+        self.view[x, y, index] = value
+
+    def view_string(self):
+        str = ""
+        for y in range(VIEW_HEIGHT):
+            str = str + "|"
+            for x in range(VIEW_WIDTH):
+                v = self.view[x,y]
+                sum = v.sum()
+                # print("v=", v, "sum=", sum)
+                if sum == 0:
+                    str = str + " "
+                elif sum > 1:
+                    raise(AssertionError("Too many ones in viewport"))
+                elif v[0] != 0:
+                    str = str + "O"
+                elif v[1] != 0:
+                    str = str + "@"
+                else:
+                    str = str + "X"
+            str = str + "|\n"
+        return str
+
+    def restart(self):
         self._score = 0
         self.body_length = 0
         self.head_set(self.rand_pos())
         self.field[1:HEIGHT+1,1:WIDTH+1] = 0
         self.field[self.head()] = 1
+
+        self.new_apple()
+
+        self.view.fill(0)
+        self.view_set(self.head(),INDEX_SNAKE)
+        self.view_set(self.apple, INDEX_APPLE)
+        self.view[:,:,INDEX_WALL] = 1
+        x, y = self.head()
+        min_x = max(1+VIEW_X0 - x, 0)
+        max_x = min(1+WIDTH+VIEW_X0-x, VIEW_WIDTH)
+        min_y = max(1+VIEW_Y0 - y, 0)
+        max_y = min(1+WIDTH+VIEW_Y0-y, VIEW_WIDTH)
+        # print("x in [%d,%d], y in [%d,%d]" % (min_x, max_x, min_y, max_y))
+        self.view[min_x:max_x, min_y:max_y, INDEX_WALL] = 0
 
     def new_apple(self):
         if self.body_length+1 >= AREA:
@@ -201,11 +257,11 @@ class Snake:
     def update(self):
         pygame.display.update()
 
-    def run(self, fps=20):
-        print("New game")
-        self.new_snake()
-        self.new_apple()
+    def draw_run(self, fps=20):
+        self.restart()
         self.draw_start()
+        print("New game, head=[%d, %d]" % self.head())
+        print(self.view_string())
 
         while True:
             # print("Head at %d,%d" % self.head())
@@ -214,6 +270,7 @@ class Snake:
             for event in pygame.event.get():
                 if event.type == KEYDOWN and event.key == K_ESCAPE:
                     return False
+            continue
             new_pos = self.plan_greedy()
             if self.collision(new_pos):
                 new_pos = self.plan_random()
@@ -237,11 +294,9 @@ snake = Snake()
 snake.display_start()
 
 pause = float(arguments["--pause"])
-while snake.run(fps=float(arguments["--fps"])):
+while snake.draw_run(fps=float(arguments["--fps"])):
     print("Score was", snake.score())
     pygame.time.wait(int(pause*1000))
 
 snake.display_stop()
 # -
-
-not snake.field[3,4] == 0
