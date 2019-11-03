@@ -15,6 +15,28 @@
 
 # + {"language": "html"}
 # <style>.container {width:100% !important;}</style>
+
+# +
+"""Snake
+
+Usage:
+  snake.py [-f <file>] [--fps=<fps>] [--pause=<pause>]
+  snake.py (-h | --help)
+  snake..py --version
+
+Options:
+  -h --help     Show this screen
+  --version     Show version
+  --fps=<fps>   Speed in knots [default: 40]
+  --pause=<pause> Pause <pause> seconds between games [default: 5]
+  -f <file>:    Used by jupyter, ignored
+
+"""
+from docopt import docopt
+
+if __name__ == '__main__':
+    arguments = docopt(__doc__, version='Snake 1.0')
+arguments
 # -
 
 # %matplotlib inline
@@ -57,12 +79,13 @@ class Snake:
         self.apple = (0,0)
 
     def display_start(self):
+        # Avoid pygame.init() since the init of the mixer component leads to 100% CPU
+        pygame.display.init()
         self.last_collision = 0,0
         self.screen = pygame.display.set_mode(((WIDTH+2)*BLOCK, (HEIGHT+2)*BLOCK))
         pygame.draw.rect(self.screen, self.WALL, (0, 0, (WIDTH+2)*BLOCK, (HEIGHT+2)*BLOCK), 0)
         pygame.display.set_caption('Snake')
         # pygame.mouse.set_visible(1)
-        pygame.init()
 
     def display_stop(self):
         pygame.display.quit()
@@ -179,7 +202,7 @@ class Snake:
         pygame.display.update()
 
     def run(self, fps=20):
-        #print("New game")
+        print("New game")
         self.new_snake()
         self.new_apple()
         self.draw_start()
@@ -213,9 +236,10 @@ class Snake:
 snake = Snake()
 snake.display_start()
 
-while snake.run(fps=40):
+pause = float(arguments["--pause"])
+while snake.run(fps=float(arguments["--fps"])):
     print("Score was", snake.score())
-
+    pygame.time.wait(int(pause*1000))
 
 snake.display_stop()
 # -
