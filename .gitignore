@@ -1,3 +1,6 @@
 .ipynb_checkpoints/
 *.ipynb
+cell_*.py
+*.~*~
 logs/
+bl?b*

@@ -13,9 +13,6 @@
 #     name: python3
 # ---
 
-# + {"language": "html"}
-# <style>.container {width:100% !important;}</style>
-
 # +
 """Snake
 
