@@ -27,7 +27,7 @@ Usage:
 Options:
   -h --help        Show this screen
   --version        Show version
-  --fps=<fps>      Frames per second [default: 40]
+  --fps=<fps>      Frames per second (0 is no delays) [default: 40]
   --pause=<pause>  Pause for <pause> seconds after death [default: 5]
   -f <file>:       Used by jupyter, ignored
 
@@ -44,11 +44,15 @@ from matplotlib import pyplot as plt
 
 import random
 import math
+import timeit
 import numpy as np
+
+import os
+os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import pygame
 from pygame.locals import *
 
-abs(-6)
+
 
 # +
 clock = pygame.time.Clock()
@@ -93,16 +97,21 @@ class Snake:
         self.body_length = 0
         self.apple = INDEX_SNAKE,0,0
 
+    # You can only have one pygame instance in one process,
+    # so make display related variables into class variables
     def display_start(self):
         # Avoid pygame.init() since the init of the mixer component leads to 100% CPU
         pygame.display.init()
-        self.last_collision = INDEX_SNAKE,VIEW_X0-1,VIEW_Y0-1
-        self.screen = pygame.display.set_mode(((WIDTH+2)*BLOCK, (HEIGHT+2)*BLOCK))
-        pygame.draw.rect(self.screen, self.WALL, (0, 0, (WIDTH+2)*BLOCK, (HEIGHT+2)*BLOCK))
+        Snake.last_collision = INDEX_SNAKE,VIEW_X0-1,VIEW_Y0-1
+        Snake.screen = pygame.display.set_mode(((WIDTH+2)*BLOCK, (HEIGHT+2)*BLOCK))
+        rect = 0, 0, (WIDTH+2)*BLOCK, (HEIGHT+2)*BLOCK
+        Snake.updates = [rect]
+        pygame.draw.rect(Snake.screen, Snake.WALL, rect)
         pygame.display.set_caption('Snake')
         # pygame.mouse.set_visible(1)
 
     def display_stop(self):
+        Snake.screen = None
         pygame.display.quit()
 
     def rand_pos(self):
@@ -130,17 +139,17 @@ class Snake:
                 sum = v.sum()
                 # print("v=", v, "sum=", sum)
                 if sum == 0:
-                    str = str + " "
+                    str += " "
                 elif sum > 1:
                     # raise(AssertionError("Too many ones in viewport"))
-                    str = str + "*"
+                    str += "*"
                 elif v[0] != 0:
-                    str = str + "O"
+                    str += "O"
                 elif v[1] != 0:
-                    str = str + "@"
+                    str += "@"
                 else:
-                    str = str + "X"
-            str = str + "|\n"
+                    str += "X"
+            str += "|\n"
         return str
 
     def view_port(self):
@@ -169,38 +178,41 @@ class Snake:
         # print("apple at [%d, %d, %d]" % self.apple)
 
     def draw_start(self):
-        self.draw_block(self.last_collision, self.WALL)
-        self.last_collision = INDEX_SNAKE,VIEW_X0-1,VIEW_Y0-1
-        pygame.draw.rect(self.screen, self.BACKGROUND, (BLOCK, BLOCK, WIDTH*BLOCK, HEIGHT*BLOCK))
+        self.draw_block(Snake.last_collision, Snake.WALL)
+        Snake.last_collision = INDEX_SNAKE,VIEW_X0-1,VIEW_Y0-1
+        rect = BLOCK, BLOCK, WIDTH*BLOCK, HEIGHT*BLOCK
+        Snake.updates.append(rect)
+        pygame.draw.rect(Snake.screen, Snake.BACKGROUND, rect)
         self.draw_head()
         self.draw_apple()
 
     def draw_block(self, pos, color):
         # print("Draw (%d,%d,%d): %d,%d,%d" % (pos+color))
-        pygame.draw.rect(self.screen, color,
-                         ((pos[1]-VIEW_X0+1)*BLOCK+EDGE,
-                          (pos[2]-VIEW_Y0+1)*BLOCK+EDGE,
-                          DRAW_BLOCK, DRAW_BLOCK))
+        rect = ((pos[1]-VIEW_X0+1)*BLOCK+EDGE,
+                (pos[2]-VIEW_Y0+1)*BLOCK+EDGE,
+                DRAW_BLOCK, DRAW_BLOCK)
+        Snake.updates.append(rect)
+        pygame.draw.rect(Snake.screen, color, rect)
 
     def draw_apple(self):
-        self.draw_block(self.apple, self.APPLE)
+        self.draw_block(self.apple, Snake.APPLE)
 
     def draw_head(self):
-        self.draw_block(self.head(), self.HEAD)
+        self.draw_block(self.head(), Snake.HEAD)
 
     def draw_body(self, pos):
-        self.draw_block(pos, self.BODY)
+        self.draw_block(pos, Snake.BODY)
 
     def draw_collision(self, pos):
-        self.last_collision = pos
-        self.draw_block(pos, self.COLLISION)
+        Snake.last_collision = pos
+        self.draw_block(pos, Snake.COLLISION)
 
     def draw_pre_move(self):
-        self.draw_block(self.head(), self.BODY)
-        self.draw_block(self.tail(), self.BACKGROUND)
+        self.draw_block(self.head(), Snake.BODY)
+        self.draw_block(self.tail(), Snake.BACKGROUND)
 
     def draw_pre_eat(self):
-        self.draw_block(self.head(), self.BODY)
+        self.draw_block(self.head(), Snake.BODY)
 
     def move(self, pos):
         self.field[self.tail()] = 0
@@ -249,23 +261,39 @@ class Snake:
         return directions[0]
 
     def update(self):
-        pygame.display.update()
+        # pygame.display.update()
+        pygame.display.update(Snake.updates)
+        Snake.updates = []
+
+    def frames(self):
+        return self._frames
+
+    def elapsed(self):
+        return self._elapsed
+
+    def frame_rate(self):
+        return self.frames() / self.elapsed()
 
     def draw_run(self, fps=20):
         self.restart()
         self.draw_start()
-        print("New game, head=%d [%d, %d]" % self.head())
-        #print(self.field.swapaxes(1,2))
-        #print(self.view_string())
+        # print("New game, head=%d [%d, %d]" % self.head())
+        # print(self.view_string())
 
+        frames = 0
+        start_time = timeit.default_timer()
         while True:
             self.update()
             waiting = True
+            # while waiting:
             if waiting:
                 clock.tick(fps)
+                frames += 1
                 for event in pygame.event.get():
                     if event.type == KEYDOWN:
                         if event.key == K_ESCAPE:
+                            self._elapsed = timeit.default_timer() - start_time
+                            self._frames  = frames
                             return False
                         waiting = False
             # continue
@@ -282,6 +310,9 @@ class Snake:
             elif self.collision(new_pos):
                 self.draw_collision(new_pos)
                 self.update()
+                clock.tick(fps)
+                self._elapsed = timeit.default_timer() - start_time
+                self._frames  = frames +1
                 # print(self.view_string())
                 return True
             else:
@@ -299,7 +330,7 @@ snake.display_start()
 
 pause = float(arguments["--pause"])
 while snake.draw_run(fps=float(arguments["--fps"])):
-    print("Score was", snake.score())
+    print("Score", snake.score(), "Framerate", snake.frame_rate())
     pygame.time.wait(int(pause*1000))
 
 snake.display_stop()
