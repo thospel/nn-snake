@@ -55,8 +55,6 @@ from pygame.locals import *
 
 
 # +
-clock = pygame.time.Clock()
-
 WIDTH  = 40
 HEIGHT = 40
 EDGE=1
@@ -274,12 +272,13 @@ class Snake:
     def frame_rate(self):
         return self.frames() / self.elapsed()
 
-    def draw_run(self, fps=20):
+    def draw_run(self, fps=40):
         self.restart()
         self.draw_start()
         # print("New game, head=%d [%d, %d]" % self.head())
         # print(self.view_string())
 
+        clock = pygame.time.Clock()
         frames = 0
         start_time = timeit.default_timer()
         while True:
@@ -324,6 +323,19 @@ class Snake:
             #print(self.field.swapaxes(1,2))
             #print(self.view_string())
 
+    # Don't set fps to 0
+    # I tried with set_timer, but the first trigger seems to be immediate
+    # Try again when pygame 2 is released (timers get a new "once" option)
+    def wait_escape(self, period=0, fps=40):
+        target_time = timeit.default_timer() + period
+        clock = pygame.time.Clock()
+        while timeit.default_timer() < target_time:
+            clock.tick(fps)
+            for event in pygame.event.get():
+                if event.type == KEYDOWN and event.key == K_ESCAPE:
+                    return True
+        return False
+
 # +
 snake = Snake()
 snake.display_start()
@@ -331,6 +343,7 @@ snake.display_start()
 pause = float(arguments["--pause"])
 while snake.draw_run(fps=float(arguments["--fps"])):
     print("Score", snake.score(), "Framerate", snake.frame_rate())
-    pygame.time.wait(int(pause*1000))
+    if snake.wait_escape(pause):
+        break
 
 snake.display_stop()
