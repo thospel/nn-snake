@@ -14,7 +14,7 @@
 # ---
 
 # +
-"""Snake
+"""Snakes
 
 Usage:
   snake.py [-f <file>] [--fps=<fps>] [--pause=<pause>]
@@ -49,20 +49,28 @@ os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import pygame
 from pygame.locals import *
 
-
+a=[1]
+if a:
+    print(8)
+else:
+    print(9)
 
 # +
-WIDTH  = 40
-HEIGHT = 40
+WIDTH  = 10
+HEIGHT =  5
+# TYPE_POS = np.uint8
+TYPE_POS   = np.int8
+TYPE_SNAKE = np.int8
 EDGE=1
 AREA=WIDTH*HEIGHT
 BLOCK=20
 DRAW_BLOCK = BLOCK-2*EDGE
-SIZE2 = 1<<(AREA-1).bit_length()
+# First power of 2 above greater or equal to AREA
+AREA2 = 1<<(AREA-1).bit_length()
 MASK = SIZE2-1
 
-VIEW_X0 = 9
-VIEW_Y0 = 9
+VIEW_X0 = 1
+VIEW_Y0 = 1
 VIEW_X2 = VIEW_X0+2
 VIEW_Y2 = VIEW_Y0+2
 VIEW_WIDTH  = 2*VIEW_X0+1
@@ -73,7 +81,7 @@ INDEX_APPLE = 1
 INDEX_WALL  = 2
 INDEX_MAX   = 3
 
-class Snake:
+class Snakes:
     WALL  = 255,255,255
     BODY  = 160,160,160
     HEAD  = 200,200,0
@@ -81,48 +89,101 @@ class Snake:
     APPLE = 0,255,0
     COLLISION = 255,0,0
 
-    def __init__(self):
-        # Notice that we store in column major order
-        self.field = np.zeros((INDEX_MAX, WIDTH+2*VIEW_X0, HEIGHT+2*VIEW_Y0), np.float32)
-        self.field[INDEX_WALL] = 1
-        self.field[INDEX_WALL, VIEW_X0:WIDTH+VIEW_X0,VIEW_Y0:HEIGHT+VIEW_Y0] = 0
-        self.snake_body = [None]*SIZE2
-        self.snake_head  = 0
+    def __init__(self, nr_snakes=1, view_x=0, view_y=0):
+        self._windows = None
+
+        self._nr_snakes = nr_snakes
+        self._all_snakes = np.arange(nr_snakes, dtype=TYPE_SNAKE)
+        # Notice that "active" can be in a different order from "all_snakes"
+        # However, if active.size == nr_snakes) we must always behave as if active == all_snakes.
+        # This allow us to skip indexing in several cases
+        self._active = self._all_snakes.copy()
+
+        self._view_x = view_x or VIEW_X0
+        self._view_y = view_y or VIEW_Y0
+        # Notice that we store in row major order, so use field[y][x]
+        self._field = np.ones((nr_snakes, HEIGHT+2*self._view_y, WIDTH+2*self._view_x), np.float32)
+        # Position arrays are split in x and y so we can do fast field indexing
+        self._snake_body_x = np.empty((nr_snakes, AREA2), TYPE_POS)
+        self._snake_body_y = np.empty((nr_snakes, AREA2), TYPE_POS)
+        self._snake_head = np.zeros(nr_snakes, np.uint32)
         # Body length measures the snake without a head
-        self.body_length = 0
-        self.apple = INDEX_SNAKE,0,0
+        self._body_length = np.zeros(nr_snakes, np.uint32)
 
     # You can only have one pygame instance in one process,
     # so make display related variables into class variables
-    def display_start(self):
-        # Avoid pygame.init() since the init of the mixer component leads to 100% CPU
-        pygame.display.init()
-        Snake.last_collision = INDEX_SNAKE,VIEW_X0-1,VIEW_Y0-1
-        Snake.screen = pygame.display.set_mode(((WIDTH+2)*BLOCK, (HEIGHT+2)*BLOCK))
-        rect = 0, 0, (WIDTH+2)*BLOCK, (HEIGHT+2)*BLOCK
-        Snake.updates = [rect]
-        pygame.draw.rect(Snake.screen, Snake.WALL, rect)
-        pygame.display.set_caption('Snake')
-        # pygame.mouse.set_visible(1)
+    def display_start(self, columns=0, rows=1):
+        self._windows = rows*columns
+        if self._windows:
+            # Avoid pygame.init() since the init of the mixer component leads to 100% CPU
+            pygame.display.init()
+            pygame.display.set_caption('Snakes')
+            # pygame.mouse.set_visible(1)
+
+            self.last_collision_x = np.zeros(self._windows, TYPE_POS)
+            self.last_collision_y = np.zeros(self._windows, TYPE_POS)
+
+            WINDOW_X = WIDTH+2
+            WINDOW_Y = HEIGHT+2
+            OFFSET_X =  self._view_x-1
+            OFFSET_Y =  self._view_y-1
+            self._window_x = np.tile  (np.arange(OFFSET_X, columns*WINDOW_X+OFFSET_X, WINDOW_X, dtype=np.uint32), rows)
+            self._window_y = np.repeat(np.arange(OFFSET_Y, rows   *WINDOW_Y+OFFSET_Y, WINDOW_Y, dtype=np.uint32), columns)
+
+            Snakes.screen = pygame.display.set_mode((WINDOW_X * BLOCK * columns, WINDOW_Y * BLOCK * rows))
+            rect = 0, 0, WINDOW_X * BLOCK * columns, WINDOW_Y * BLOCK * rows
+            Snakes.updates = [rect]
+            pygame.draw.rect(Snakes.screen, Snakes.WALL, rect)
+
+    def restart(self):
+        self._score = np.zeros(self._nr_snakes, np.uint32)
+        self._body_length.fill(0)
+        self.head_set_x(self.rands_pos(self._nr_snakes, WIDTH,  self._view_x))
+        self.head_set_y(self.rands_pos(self._nr_snakes, HEIGHT, self._view_y))
+        self._field[:, self._view_y:self._view_y+HEIGHT, self._view_x:self._view_x+WIDTH] = 0
+        # print("_body_x", self._snake_body_x)
+        # print("_body_y", self._snake_body_y)
+        # print("head_x()", self.head_x())
+        # print("head_y()", self.head_y())
+        self._field[self._all_snakes, self.head_y(), self.head_x()] = 1
+
+        self._apple_x = self.rands_pos(self._nr_snakes, WIDTH,  self._view_x)
+        self._apple_y = self.rands_pos(self._nr_snakes, HEIGHT, self._view_y)
+        # print("_apple_x", self._apple_x)
+        # print("_apple_y", self._apple_y)
 
     def display_stop(self):
-        Snake.screen = None
-        pygame.display.quit()
+        if self._windows:
+            Snakes.screen = None
+            pygame.display.quit()
 
     def rand_pos(self):
-        return INDEX_SNAKE, random.randrange(WIDTH)+VIEW_X0, random.randrange(HEIGHT)+VIEW_Y0
+        return random.randrange(WIDTH)+VIEW_X0, random.randrange(HEIGHT)+VIEW_Y0
+
+    def rands_pos(self, nr, range, offset=0):
+        return np.random.randint(offset, offset+range, nr, TYPE_POS)
 
     def score(self):
         return self._score
 
-    def head(self):
-        return self.snake_body[self.snake_head & MASK]
+    def head_x(self):
+        return self._snake_head_x
+        # return self._snake_head_x[self._all_snakes, self._snake_head & MASK]
 
-    def head_set(self, value):
-        self.snake_body[self.snake_head & MASK] = value;
+    def head_y(self):
+        return self._snake_head_y
+        # return self._snake_body_y[self._all_snakes, self._snake_head & MASK]
+
+    def head_set_x(self, value):
+        self._snake_head_x = value
+        self._snake_body_x[self._all_snakes, self._snake_head] = value;
+
+    def head_set_y(self, value):
+        self._snake_head_y = value
+        self._snake_body_y[self._all_snakes, self._snake_head] = value;
 
     def tail(self):
-        return self.snake_body[(self.snake_head - self.body_length) & MASK]
+        return self._snake_body[(self._snake_head - self._body_length) & MASK]
 
     def view_string(self):
         port = self.view_port()
@@ -138,9 +199,9 @@ class Snake:
                 elif sum > 1:
                     # raise(AssertionError("Too many ones in viewport"))
                     str += "*"
-                elif v[0] != 0:
+                elif v[0]:
                     str += "O"
-                elif v[1] != 0:
+                elif v[1]:
                     str += "@"
                 else:
                     str += "X"
@@ -149,98 +210,101 @@ class Snake:
 
     def view_port(self):
         index,x,y = self.head()
-        return self.field[:,x-VIEW_X0:x+VIEW_X2,y-VIEW_Y0:y+VIEW_Y2]
-
-    def restart(self):
-        self._score = 0
-        self.body_length = 0
-        self.head_set(self.rand_pos())
-        self.field[INDEX_SNAKE, VIEW_X0:WIDTH+VIEW_X0,VIEW_Y0:HEIGHT+VIEW_Y0] = 0
-        self.field[self.head()] = 1
-
-        self.new_apple()
+        return self._field[:,x-VIEW_X0:x+VIEW_X2,y-VIEW_Y0:y+VIEW_Y2]
 
     def new_apple(self):
-        if self.body_length+1 >= AREA:
+        if self._body_length+1 >= AREA:
             raise(AssertionError("No place for apples"))
-        self.field[INDEX_APPLE, self.apple[1], self.apple[2]] = 0
+        self._field[INDEX_APPLE, self._apple[1], self._apple[2]] = 0
         # If we ever get good enough to almost fill the screen this will be slow
         while True:
-            self.apple = self.rand_pos()
-            if (self.field[self.apple] == 0):
+            self._apple = self.rand_pos()
+            if (self._field[self._apple] == 0):
                 break
-        self.field[INDEX_APPLE, self.apple[1], self.apple[2]] = 1
-        # print("apple at [%d, %d, %d]" % self.apple)
+        self._field[INDEX_APPLE, self._apple[1], self._apple[2]] = 1
+        # print("apple at [%d, %d, %d]" % self._apple)
 
     def draw_start(self):
-        self.draw_block(Snake.last_collision, Snake.WALL)
-        Snake.last_collision = INDEX_SNAKE,VIEW_X0-1,VIEW_Y0-1
-        rect = BLOCK, BLOCK, WIDTH*BLOCK, HEIGHT*BLOCK
-        Snake.updates.append(rect)
-        pygame.draw.rect(Snake.screen, Snake.BACKGROUND, rect)
-        self.draw_head()
-        self.draw_apple()
+        self.draw_blocks(self.last_collision_x, self.last_collision_y, Snakes.WALL)
+        self.last_collision = INDEX_SNAKE,VIEW_X0-1,VIEW_Y0-1
+        for i in range(self._windows):
+            rect = (self._window_x[i]+1) * BLOCK, (self._window_y[i]+1) * BLOCK, WIDTH*BLOCK, HEIGHT*BLOCK
+            Snakes.updates.append(rect)
+            pygame.draw.rect(Snakes.screen, Snakes.BACKGROUND, rect)
+        self.draw_heads()
+        self.draw_apples()
 
-    def draw_block(self, pos, color):
+    def draw_block(self, x, y, color):
         # print("Draw (%d,%d,%d): %d,%d,%d" % (pos+color))
-        rect = ((pos[1]-VIEW_X0+1)*BLOCK+EDGE,
-                (pos[2]-VIEW_Y0+1)*BLOCK+EDGE,
-                DRAW_BLOCK, DRAW_BLOCK)
-        Snake.updates.append(rect)
-        pygame.draw.rect(Snake.screen, color, rect)
+        rect = x*BLOCK+EDGE, y*BLOCK+EDGE, DRAW_BLOCK, DRAW_BLOCK
+        Snakes.updates.append(rect)
+        pygame.draw.rect(Snakes.screen, color, rect)
 
-    def draw_apple(self):
-        self.draw_block(self.apple, Snake.APPLE)
+    def draw_blocks(self, x, y, color):
+        # print("X", x)
+        # print("Y", y)
+        for i in range(self._windows):
+            self.draw_block(x[i] + self._window_x[i], y[i] + self._window_y[i], color)
 
-    def draw_head(self):
-        self.draw_block(self.head(), Snake.HEAD)
+    def draw_apples(self):
+        self.draw_blocks(self._apple_x, self._apple_y, Snakes.APPLE)
+
+    def draw_heads(self):
+        self.draw_blocks(self.head_x(), self.head_y(), Snakes.HEAD)
 
     def draw_body(self, pos):
-        self.draw_block(pos, Snake.BODY)
+        self.draw_block(pos, Snakes.BODY)
 
     def draw_collision(self, pos):
-        Snake.last_collision = pos
-        self.draw_block(pos, Snake.COLLISION)
+        self.last_collision = pos
+        self.draw_block(pos, Snakes.COLLISION)
 
     def draw_pre_move(self):
-        self.draw_block(self.head(), Snake.BODY)
-        self.draw_block(self.tail(), Snake.BACKGROUND)
+        self.draw_block(self.head(), Snakes.BODY)
+        self.draw_block(self.tail(), Snakes.BACKGROUND)
 
     def draw_pre_eat(self):
-        self.draw_block(self.head(), Snake.BODY)
+        self.draw_block(self.head(), Snakes.BODY)
 
     def move(self, pos):
-        self.field[self.tail()] = 0
-        self.snake_head = self.snake_head+1 & MASK
+        self._field[self.tail()] = 0
+        self._snake_head = self._snake_head+1 & MASK
         self.head_set(pos)
-        self.field[self.head()] = 1
+        self._field[self.head()] = 1
 
     def eat(self, pos):
-        self.snake_head = self.snake_head+1 & MASK
-        self.body_length = self.body_length +1
+        self._snake_head = self._snake_head+1 & MASK
+        self._body_length = self._body_length +1
         self.head_set(pos)
-        self.field[self.head()] = 1
+        self._field[self.head()] = 1
         self._score = self._score+1
 
-    def collision(self, pos):
-        return self.field[pos] or self.field[INDEX_WALL, pos[1], pos[2]] != 0
+    def collision_indices(self, pos, indices):
+        x, y = pos
+        if indices.size == self._nr_snakes:
+            return self._field[self._all_snakes, y, x].nonzero()[0]
+        return self._field[indices, y, x].nonzero()[0]
 
     def plan_greedy(self):
-        index,x,y = self.head()
-        dx = self.apple[1] - x
-        dy = self.apple[2] - y
-        if dx == 0 and dy == 0:
-            raise(AssertionError("Head is on apple"))
-        if abs(dx) > abs(dy):
-            if dx > 0:
-                return index,x+1,y
-            else:
-                return index,x-1,y
-        else:
-            if dy > 0:
-                return index,x,y+1
-            else:
-                return index,x,y-1
+        x = self.head_x()
+        y = self.head_y()
+        if self._active.size != self._nr_snakes:
+            x = x[self._active]
+            y = y[self._active]
+
+        dx = self._apple_x - x
+        dy = self._apple_y - y
+        abs_dx = np.abs(dx)
+        abs_dy = np.abs(dy)
+        dir_x = abs_dx > abs_dy
+        dx = np.where(dir_x, np.sign(dx), 0)
+        dy = np.where(dir_x, 0,          np.sign(dy))
+        # Diag is mainly meant to detect dx == dy == 0
+        # But is also debugs *some* diagonal moves
+        diag = dx == dy
+        if np.count_nonzero(diag):
+            raise(AssertionError("Impossible apple direction"))
+        return x+dx, y+dy
 
     def plan_random(self):
         index,x, y = self.head()
@@ -257,8 +321,9 @@ class Snake:
 
     def update(self):
         # pygame.display.update()
-        pygame.display.update(Snake.updates)
-        Snake.updates = []
+        if Snakes.updates:
+            pygame.display.update(Snakes.updates)
+            Snakes.updates = []
 
     def frames(self):
         return self._frames
@@ -293,17 +358,19 @@ class Snake:
                             return False
                         waiting = False
             # continue
+            print("Head_x ", self.head_x())
+            print("Head_y ", self.head_y())
+            print("Apple_x", self._apple_x)
+            print("Apple_y", self._apple_y)
             new_pos = self.plan_greedy()
-            if self.collision(new_pos):
-                new_pos = self.plan_random()
-            # print("Move to %d,%d" % new_pos)
-            if new_pos == self.apple:
-                self.draw_pre_eat()
-                self.eat(new_pos)
-                self.new_apple()
-                self.draw_apple()
-                # print("Score", self.score())
-            elif self.collision(new_pos):
+            collisions = self.collision_indices(new_pos, self._active)
+            # print(collisions)
+            if collisions.size:
+                new_pos[collisions] = self.plan_random(collisions if self._active.size == self._nr_snakes else self._active[collisions])
+            print("Move x ", new_pos[0])
+            print("Move y ", new_pos[1])
+            collisions = self.collision_indices(new_pos, self._active)
+            if collisions.size:
                 self.draw_collision(new_pos)
                 self.update()
                 clock.tick(fps)
@@ -311,13 +378,21 @@ class Snake:
                 self._frames  = frames +1
                 # print(self.view_string())
                 return True
+
+            if new_pos == self._apple:
+                self.draw_pre_eat()
+                self.eat(new_pos)
+                self.new_apple()
+                self.draw_apple()
+                # print("Score", self.score())
+            elif self.collision(new_pos):
             else:
                 self.draw_pre_move()
                 self.move(new_pos)
             self.draw_head()
 
             #print("Head at %d [%d,%d]" % self.head())
-            #print(self.field.swapaxes(1,2))
+            #print(self._field.swapaxes(1,2))
             #print(self.view_string())
 
     # Don't set fps to 0
@@ -333,14 +408,15 @@ class Snake:
                     return True
         return False
 
+
 # +
-snake = Snake()
-snake.display_start()
+snakes = Snakes(nr_snakes=6)
+snakes.display_start(3,2)
 
 pause = float(arguments["--pause"])
-while snake.draw_run(fps=float(arguments["--fps"])):
-    print("Score", snake.score(), "Framerate", snake.frame_rate())
-    if snake.wait_escape(pause):
-        break
+while snakes.draw_run(fps=float(arguments["--fps"])):
+    pass
+print("Score", snakes.score(), "Framerate", snake.frame_rate())
 
 snake.display_stop()
+# -
