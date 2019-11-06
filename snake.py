@@ -17,16 +17,22 @@
 """Snakes
 
 Usage:
-  snake.py [-f <file>] [--fps=<fps>] [--pause=<pause>]
+  snake.py [-f <file>] [--snakes=<snakes>] [--fps=<fps>] [--width=<width>] [--height=<height>][--columns=columns] [--rows=rows] [--block=<block_size>]
   snake.py (-h | --help)
   snake..py --version
 
 Options:
-  -h --help        Show this screen
-  --version        Show version
-  --fps=<fps>      Frames per second (0 is no delays) [default: 40]
-  --pause=<pause>  Pause for <pause> seconds after death [default: 5]
-  -f <file>:       Used by jupyter, ignored
+  -h --help             Show this screen
+  --version             Show version
+  --fps=<fps>           Frames per second (0 is no delays) [default: 40]
+  --snakes=<snakes>     How many snakes to run at the same time [default: 0]
+                        0 means use rows * colums or 1
+  --width=<width>       Pit width [default: 40]
+  --height=<height>     Pit height [default: 40]
+  --columns=<columns>   Pit height [default: 2]
+  --block=<block_size>  Block size in pixels [default: 20]
+  --rows=<rows>         Pit width [default: 1]
+  -f <file>:            Used by jupyter, ignored
 
 """
 from docopt import docopt
@@ -58,9 +64,9 @@ def np_empty(shape, type):
 
 
 # +
-WIDTH  =  40
-HEIGHT =  40
-# TYPE_POS = np.uint8
+WIDTH_DEFAULT  = 40
+HEIGHT_DEFAULT = 40
+E_POS = np.uint8
 TYPE_POS   = np.int8
 TYPE_PIXELS = np.uint16
 TYPE_BOOL  = np.bool
@@ -69,12 +75,7 @@ TYPE_FLAG  = np.uint8
 TYPE_SCORE = np.uint32
 TYPE_MOVES = np.uint32
 EDGE=1
-AREA=WIDTH*HEIGHT
-BLOCK=20
-DRAW_BLOCK = BLOCK-2*EDGE
-# First power of 2 above greater or equal to AREA
-AREA2 = 1<<(AREA-1).bit_length()
-MASK = AREA2-1
+BLOCK_DEFAULT=20
 
 VIEW_X0 = 1
 VIEW_Y0 = 1
@@ -102,7 +103,7 @@ class Snakes:
     DIRECTION_PERMUTATIONS_X=DIRECTION_PERMUTATIONS[:,:,0]
     DIRECTION_PERMUTATIONS_Y=DIRECTION_PERMUTATIONS[:,:,1]
 
-    def __init__(self, nr_snakes=1, view_x=0, view_y=0):
+    def __init__(self, nr_snakes=1, width=0, height=0, view_x=0, view_y=0):
         self._windows = None
 
         self._nr_snakes = nr_snakes
@@ -110,12 +111,21 @@ class Snakes:
 
         self._view_x = view_x or VIEW_X0
         self._view_y = view_y or VIEW_Y0
+        self.WIDTH  = width  or WIDTH_DEFAULT
+        self.HEIGHT = height or HEIGHT_DEFAULT
+        self.AREA   = self.WIDTH * self.HEIGHT
+        # First power of 2 greater or equal to AREA for fast modular arithmetic
+        self.AREA2 = 1 << (self.AREA-1).bit_length()
+        self.MASK  = self.AREA2 - 1
+
         # Notice that we store in row major order, so use field[y,x]
-        self._field = np.ones((nr_snakes, HEIGHT+2*self._view_y, WIDTH+2*self._view_x), dtype=TYPE_FLAG)
+        self._field = np.ones((nr_snakes,
+                               self.HEIGHT+2*self._view_y,
+                               self.WIDTH +2*self._view_x), dtype=TYPE_FLAG)
         # Position arrays are split in x and y so we can do fast _field indexing
-        self._snake_body_x = np_empty((nr_snakes, AREA2), TYPE_POS)
+        self._snake_body_x = np_empty((nr_snakes, self.AREA2), TYPE_POS)
         self._snake_body_x[:, 0] = 1
-        self._snake_body_y = np_empty((nr_snakes, AREA2), TYPE_POS)
+        self._snake_body_y = np_empty((nr_snakes, self.AREA2), TYPE_POS)
         self._snake_body_y[:, 0] = 1
         # Body length measures the snake *without* the head
         # This is therefore also the score (if we start with length 0 snakes)
@@ -128,7 +138,10 @@ class Snakes:
 
     # You can only have one pygame instance in one process,
     # so make display related variables into class variables
-    def display_start(self, columns=0, rows=1):
+    def display_start(self, columns=0, rows=1, block_size=0):
+        self.BLOCK = block_size or BLOCK_DEFAULT
+        self.DRAW_BLOCK = self.BLOCK-2*EDGE
+
         self._windows = rows*columns
         if self._windows:
             # Avoid pygame.init() since the init of the mixer component leads to 100% CPU
@@ -139,15 +152,15 @@ class Snakes:
             self.last_collision_x = np.zeros(self._windows, dtype=TYPE_PIXELS)
             self.last_collision_y = np.zeros(self._windows, dtype=TYPE_PIXELS)
 
-            WINDOW_X = WIDTH+2
-            WINDOW_Y = HEIGHT+2
+            WINDOW_X = self.WIDTH+2
+            WINDOW_Y = self.HEIGHT+2
             OFFSET_X =  self._view_x-1
             OFFSET_Y =  self._view_y-1
             self._window_x = np.tile  (np.arange(OFFSET_X, columns*WINDOW_X+OFFSET_X, WINDOW_X, dtype=np.uint32), rows)
             self._window_y = np.repeat(np.arange(OFFSET_Y, rows   *WINDOW_Y+OFFSET_Y, WINDOW_Y, dtype=np.uint32), columns)
 
-            Snakes.screen = pygame.display.set_mode((WINDOW_X * BLOCK * columns, WINDOW_Y * BLOCK * rows))
-            rect = 0, 0, WINDOW_X * BLOCK * columns, WINDOW_Y * BLOCK * rows
+            Snakes.screen = pygame.display.set_mode((WINDOW_X * self.BLOCK * columns, WINDOW_Y * self.BLOCK * rows))
+            rect = 0, 0, WINDOW_X * self.BLOCK * columns, WINDOW_Y * self.BLOCK * rows
             Snakes.updates = [rect]
             pygame.draw.rect(Snakes.screen, Snakes.WALL, rect)
 
@@ -158,11 +171,11 @@ class Snakes:
 
     def rand_x(self, nr):
         offset = self._view_x
-        return np.random.randint(offset, offset+WIDTH,  size=nr, dtype=TYPE_POS)
+        return np.random.randint(offset, offset+self.WIDTH,  size=nr, dtype=TYPE_POS)
 
     def rand_y(self, nr):
         offset = self._view_y
-        return np.random.randint(offset, offset+HEIGHT, size=nr, dtype=TYPE_POS)
+        return np.random.randint(offset, offset+self.HEIGHT, size=nr, dtype=TYPE_POS)
 
     def score(self):
         return self._body_length
@@ -179,7 +192,7 @@ class Snakes:
     def head_set(self, x, y):
         self._head_x = x
         self._head_y = y
-        offset = self._cur_move & MASK
+        offset = self._cur_move & self.MASK
         self._snake_body_x[self._all_snakes, offset] = x
         self._snake_body_y[self._all_snakes, offset] = y
         self._field[self._all_snakes, y, x] = 1
@@ -187,12 +200,15 @@ class Snakes:
     def tail_set(self, values):
         # print("Eat", values)
         # print("body length", self._body_length)
-        offset = self._cur_move & MASK
+
+        # Bring potentially large cur_move into a reasonable range
+        # so tails will not use some large integer type
+        offset = self._cur_move & self.MASK
         # print("Offset", offset)
-        tails = (offset - self._body_length) & MASK
-        # print("tail index", tails)
-        x = self._snake_body_x[self._all_snakes, tails]
-        y = self._snake_body_y[self._all_snakes, tails]
+        tail_offset = (offset - self._body_length) & self.MASK
+        # print("tail offset", tail_offset)
+        x = self._snake_body_x[self._all_snakes, tail_offset]
+        y = self._snake_body_y[self._all_snakes, tail_offset]
         # print("tail pos")
         # print(np.dstack((x, y)))
         self._field[self._all_snakes, y, x] = values
@@ -201,9 +217,9 @@ class Snakes:
     def view_string(self):
         port = self.view_port()
         str = ""
-        for y in range(VIEW_HEIGHT):
+        for y in range(VIEW_self.HEIGHT):
             str = str + "|"
-            for x in range(VIEW_WIDTH):
+            for x in range(VIEW_self.WIDTH):
                 v = port[:,x,y]
                 sum = v.sum()
                 # print("v=", v, "sum=", sum)
@@ -226,7 +242,7 @@ class Snakes:
         return self._field[:,x-VIEW_X0:x+VIEW_X2,y-VIEW_Y0:y+VIEW_Y2]
 
     def new_apples(self, todo):
-        too_large = self._body_length[todo] >= AREA-1
+        too_large = self._body_length[todo] >= self.AREA-1
         if too_large.any():
             raise(AssertionError("No place for apples"))
 
@@ -248,7 +264,7 @@ class Snakes:
 
     def draw_block(self, x, y, color):
         # print("Draw (%d,%d,%d): %d,%d,%d" % (pos+color))
-        rect = x*BLOCK+EDGE, y*BLOCK+EDGE, DRAW_BLOCK, DRAW_BLOCK
+        rect = x*self.BLOCK+EDGE, y*self.BLOCK+EDGE, self.DRAW_BLOCK, self.DRAW_BLOCK
         Snakes.updates.append(rect)
         pygame.draw.rect(Snakes.screen, color, rect)
 
@@ -275,7 +291,7 @@ class Snakes:
                     self.draw_block(x[w] + self._window_x[w],
                                     y[w] + self._window_y[w], Snakes.COLLISION)
             else:
-                rect = (self._window_x[w]+1) * BLOCK, (self._window_y[w]+1) * BLOCK, WIDTH*BLOCK, HEIGHT*BLOCK
+                rect = (self._window_x[w]+1) * self.BLOCK, (self._window_y[w]+1) * self.BLOCK, self.WIDTH*self.BLOCK, self.HEIGHT*self.BLOCK
                 Snakes.updates.append(rect)
                 pygame.draw.rect(Snakes.screen, Snakes.BACKGROUND, rect)
 
@@ -345,7 +361,7 @@ class Snakes:
         return self._cur_move
 
     def elapsed(self):
-        return self._elapsed
+        return self._time_end - self._time_start
 
     def frame_rate(self):
         return self.frames() / self.elapsed()
@@ -365,13 +381,14 @@ class Snakes:
         self._apple_y.fill(0)
 
         self._cur_move = 0
-        clock = pygame.time.Clock()
-        start_time = timeit.default_timer()
+        time_step = 1/fps if fps > 0 else 0
+        self._time_start  = timeit.default_timer()
+        time_target = self._time_start + time_step
         while True:
             collided = is_collision.nonzero()[0]
             # print("Collided", collided)
             if collided.size:
-                self._field[collided, self._view_y:self._view_y+HEIGHT, self._view_x:self._view_x+WIDTH] = 0
+                self._field[collided, self._view_y:self._view_y+self.HEIGHT, self._view_x:self._view_x+self.WIDTH] = 0
 
                 self._nr_moves[collided] = self._cur_move
                 self._body_length[collided]  = 0
@@ -415,13 +432,17 @@ class Snakes:
             waiting = True
             # while waiting:
             if waiting:
-                clock.tick(fps)
+                if fps > 0:
+                    left = int((time_target - timeit.default_timer())*1000)
+                    if left > 0:
+                        pygame.time.wait(left)
                 for event in pygame.event.get():
                     if event.type == KEYDOWN:
                         if event.key == K_ESCAPE:
-                            self._elapsed = timeit.default_timer() - start_time
+                            self._time_end  = timeit.default_timer()
                             return False
                         waiting = False
+            time_target += time_step
             # continue
             x, y = self.plan_greedy()
             collided = self._field[self._all_snakes, y, x].nonzero()[0]
@@ -450,10 +471,16 @@ class Snakes:
 
 
 # +
-snakes = Snakes(nr_snakes=2)
-snakes.display_start(2,1)
+columns = int(arguments["--columns"])
+rows = int(arguments["--rows"])
+nr_snakes = int(arguments["--snakes"]) or rows*columns
+block_size = int(arguments["--block"])
 
-pause = float(arguments["--pause"])
+snakes = Snakes(nr_snakes=nr_snakes,
+                width=int(arguments["--width"]),
+                height=int(arguments["--height"]))
+snakes.display_start(columns=columns, rows=rows, block_size = block_size)
+
 while snakes.draw_run(fps=float(arguments["--fps"])):
     pass
 print("Score", snakes.score(), "Framerate", snakes.frame_rate())
