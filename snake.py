@@ -17,13 +17,16 @@
 """Snakes
 
 Usage:
-  snake.py [-f <file>] [--snakes=<snakes>] [--fps=<fps>] [--width=<width>] [--height=<height>][--columns=columns] [--rows=rows] [--block=<block_size>]
+  snake.py [-f <file>] [--snakes=<snakes>] [--stepping] [--fps=<fps>]
+           [--width=<width>] [--height=<height>]
+           [--columns=columns] [--rows=rows] [--block=<block_size>]
   snake.py (-h | --help)
   snake..py --version
 
 Options:
   -h --help             Show this screen
   --version             Show version
+  --stepping            Don't start running immediately, wait for the user to press ENTER
   --fps=<fps>           Frames per second (0 is no delays) [default: 40]
   --snakes=<snakes>     How many snakes to run at the same time [default: 0]
                         0 means use rows * colums or 1
@@ -64,6 +67,10 @@ def np_empty(shape, type):
 
 
 # +
+POLL_DEFAULT = 1/25
+KEY_INTERVAL = int(1000 / 20)  # twenty per second
+KEY_DELAY = 500           # Start repeating after half a second
+
 WIDTH_DEFAULT  = 40
 HEIGHT_DEFAULT = 40
 E_POS = np.uint8
@@ -97,6 +104,8 @@ class Snakes:
     APPLE = 0,255,0
     COLLISION = 255,0,0
 
+    START_MOVE = 1
+
     DIRECTIONS = [[1,0],[-1,0],[0,1],[0,-1]]
     DIRECTION_PERMUTATIONS = np.array(list(itertools.permutations(DIRECTIONS)), dtype=TYPE_POS)
     NR_DIRECTION_PERMUTATIONS = len(DIRECTION_PERMUTATIONS)
@@ -124,9 +133,17 @@ class Snakes:
                                self.WIDTH +2*self._view_x), dtype=TYPE_FLAG)
         # Position arrays are split in x and y so we can do fast _field indexing
         self._snake_body_x = np_empty((nr_snakes, self.AREA2), TYPE_POS)
-        self._snake_body_x[:, 0] = 1
         self._snake_body_y = np_empty((nr_snakes, self.AREA2), TYPE_POS)
-        self._snake_body_y[:, 0] = 1
+
+        # Very first run: body_length =0 and offset (cur_move) = START_MOVE-1
+        # So the very first tail_set() will access (offset-cur_move) & MASK
+        # So we need to make sure this is a coordinate inside _field so the
+        # border won't get destroyed. At all later times the field before the
+        # head will hav been set by previous runs
+        start_move = (Snakes.START_MOVE-1) & self.MASK
+        self._snake_body_x[:, start_move] = 1
+        self._snake_body_y[:, start_move] = 1
+
         # Body length measures the snake *without* the head
         # This is therefore also the score (if we start with length 0 snakes)
         self._body_length = np_empty(nr_snakes, TYPE_INDEX)
@@ -148,6 +165,7 @@ class Snakes:
             pygame.display.init()
             pygame.display.set_caption('Snakes')
             # pygame.mouse.set_visible(1)
+            pygame.key.set_repeat(KEY_DELAY, KEY_INTERVAL)
 
             self.last_collision_x = np.zeros(self._windows, dtype=TYPE_PIXELS)
             self.last_collision_y = np.zeros(self._windows, dtype=TYPE_PIXELS)
@@ -357,16 +375,22 @@ class Snakes:
             pygame.display.update(Snakes.updates)
             Snakes.updates = []
 
-    def frames(self):
-        return self._cur_move
+    def frame(self):
+        return self._cur_move - Snakes.START_MOVE
 
     def elapsed(self):
         return self._time_end - self._time_start
 
-    def frame_rate(self):
-        return self.frames() / self.elapsed()
+    def paused(self):
+        return self._paused
 
-    def draw_run(self, fps=40):
+    def frames_skipped(self):
+        return self._frames_skipped
+
+    def frame_rate(self):
+        return (self.frame() - self.frames_skipped()) / (self.elapsed() - self.paused())
+
+    def draw_run(self, fps=40, stepping=False):
         self.draw_start()
         # print("New game, head=%d [%d, %d]" % self.head())
         # print(self.view_string())
@@ -380,10 +404,22 @@ class Snakes:
         self._apple_x.fill(0)
         self._apple_y.fill(0)
 
-        self._cur_move = 0
+        self._cur_move = Snakes.START_MOVE-1
+        self._paused = 0
         time_step = 1/fps if fps > 0 else 0
+        # print("Start at time 0, frame", self.frame())
         self._time_start  = timeit.default_timer()
-        time_target = self._time_start + time_step
+        time_target = self._time_start
+        if stepping:
+            pause_start = self._time_start
+            time_step = POLL_DEFAULT
+            frame_start = self.frame()
+            # When stepping the first frame doesn't count
+            self._frames_skipped = -1
+        else:
+            pause_start = 0
+            self._frames_skipped = 0
+
         while True:
             collided = is_collision.nonzero()[0]
             # print("Collided", collided)
@@ -430,20 +466,52 @@ class Snakes:
 
             self.update()
             waiting = True
-            # while waiting:
-            if waiting:
-                if fps > 0:
+            while waiting:
+                if stepping:
+                    stepping = False
+                elif time_step:
                     left = int((time_target - timeit.default_timer())*1000)
                     if left > 0:
                         pygame.time.wait(left)
                 for event in pygame.event.get():
-                    if event.type == KEYDOWN:
-                        if event.key == K_ESCAPE:
-                            self._time_end  = timeit.default_timer()
-                            return False
-                        waiting = False
-            time_target += time_step
-            # continue
+                    if event.type == QUIT or event.type == KEYDOWN and event.key == K_q:
+                        self._time_end  = timeit.default_timer()
+                        if pause_start:
+                            self._paused += self._time_end - pause_start
+                            self._frames_skipped += self.frame() - frame_start
+                        #print("Quit at", self._time_end - self._time_start,
+                        #      "Paused", self.paused(),
+                        #      "frame", self.frame(),
+                        #      "Skipped", self.frames_skipped())
+                        return False
+                    elif event.type == KEYDOWN:
+                        # events seem to come without time
+                        time = timeit.default_timer()
+                        if event.key == K_RETURN or event.key == K_r:
+                            # Stop/start running
+                            time_target = time
+                            if pause_start:
+                                self._paused += time - pause_start
+                                self._frames_skipped += self.frame() - frame_start
+                                # print("Start running at", time - self._time_start, "frame", self.frame())
+                                time_step = 1/fps if fps > 0 else 0
+                                pause_start = 0
+                            else:
+                                # print("Stop running at", time-self._time_start, "frame", self.frame())
+                                pause_start = time
+                                frame_start = self.frame()
+                                time_step = POLL_DEFAULT
+                        elif event.key == K_s:
+                            # Single step
+                            stepping = True
+                            time_target = time
+                            if not pause_start:
+                                pause_start = time
+                                frame_start = self.frame()
+                                time_step = POLL_DEFAULT
+                waiting = pause_start and not stepping
+                time_target += time_step
+
             x, y = self.plan_greedy()
             collided = self._field[self._all_snakes, y, x].nonzero()[0]
             # print("Greedy Collided", collided)
@@ -455,19 +523,6 @@ class Snakes:
             # print(np.dstack((x, y)))
 
             is_collision = self._field[self._all_snakes, y, x]
-
-    # Don't set fps to 0
-    # I tried with set_timer, but the first trigger seems to be immediate
-    # Try again when pygame 2 is released (timers get a new "once" option)
-    def wait_escape(self, period=0, fps=40):
-        target_time = timeit.default_timer() + period
-        clock = pygame.time.Clock()
-        while timeit.default_timer() < target_time:
-            clock.tick(fps)
-            for event in pygame.event.get():
-                if event.type == KEYDOWN and event.key == K_ESCAPE:
-                    return True
-        return False
 
 
 # +
@@ -481,7 +536,7 @@ snakes = Snakes(nr_snakes=nr_snakes,
                 height=int(arguments["--height"]))
 snakes.display_start(columns=columns, rows=rows, block_size = block_size)
 
-while snakes.draw_run(fps=float(arguments["--fps"])):
+while snakes.draw_run(fps=float(arguments["--fps"]), stepping=arguments["--stepping"]):
     pass
 print("Score", snakes.score(), "Framerate", snakes.frame_rate())
 
