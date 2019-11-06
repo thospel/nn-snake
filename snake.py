@@ -185,7 +185,7 @@ class Snakes:
     def display_stop(self):
         if self._windows:
             Snakes.screen = None
-            pygame.display.quit()
+            pygame.quit()
 
     def rand_x(self, nr):
         offset = self._view_x
@@ -388,7 +388,12 @@ class Snakes:
         return self._frames_skipped
 
     def frame_rate(self):
-        return (self.frame() - self.frames_skipped()) / (self.elapsed() - self.paused())
+        elapsed = self.elapsed() - self.paused()
+        frames  = self.frame() - self.frames_skipped()
+        if elapsed == 0:
+            # This properly handles positive, negative and 0 (+inf, -inf, nan)
+            return math.inf * frames
+        return frames / elapsed
 
     def draw_run(self, fps=40, stepping=False):
         self.draw_start()
