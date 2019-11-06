@@ -57,6 +57,7 @@ import numpy as np
 import os
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import pygame
+import pygame.freetype
 from pygame.locals import *
 
 
@@ -67,6 +68,13 @@ def np_empty(shape, type):
 
 
 # +
+TEXT_MOVE    = "Move: "
+TEXT_MOVE_X  = 8
+TEXT_SCORE   = "Score: "
+TEXT_SCORE_X = 1
+TEXT_SNAKE   = "Snake: "
+TEXT_SNAKE_X = 15
+
 POLL_DEFAULT = 1/25
 KEY_INTERVAL = int(1000 / 20)  # twenty per second
 KEY_DELAY = 500           # Start repeating after half a second
@@ -158,6 +166,7 @@ class Snakes:
     def display_start(self, columns=0, rows=1, block_size=0):
         self.BLOCK = block_size or BLOCK_DEFAULT
         self.DRAW_BLOCK = self.BLOCK-2*EDGE
+        self.BASE_TEXT  = self.BLOCK-2*EDGE
 
         self._windows = rows*columns
         if self._windows:
@@ -167,18 +176,34 @@ class Snakes:
             # pygame.mouse.set_visible(1)
             pygame.key.set_repeat(KEY_DELAY, KEY_INTERVAL)
 
+            pygame.freetype.init()
+            self._font = pygame.freetype.Font(None, self.BLOCK)
+            self._font.origin = True
+
+            pos_x = int(self.BLOCK * TEXT_SCORE_X)
+            self._text_score = pos_x + self.measure_text(TEXT_SCORE)
+            pos_x = int(self.BLOCK * TEXT_MOVE_X)
+            self._text_move  = pos_x + self.measure_text(TEXT_MOVE)
+            pos_x = int(self.BLOCK * TEXT_SNAKE_X)
+            self._text_snake = pos_x + self.measure_text(TEXT_SNAKE)
+
+            self._last_text_move  = [None]*self._windows
+            self._last_text_score = [None]*self._windows
+
             self.last_collision_x = np.zeros(self._windows, dtype=TYPE_PIXELS)
             self.last_collision_y = np.zeros(self._windows, dtype=TYPE_PIXELS)
 
-            WINDOW_X = self.WIDTH+2
-            WINDOW_Y = self.HEIGHT+2
-            OFFSET_X =  self._view_x-1
-            OFFSET_Y =  self._view_y-1
+            WINDOW_X = (self.WIDTH+2)   * self.BLOCK
+            WINDOW_Y = (self.HEIGHT+2)  * self.BLOCK
+            OFFSET_X = (self._view_x-1) * self.BLOCK
+            OFFSET_Y = (self._view_y-1) * self.BLOCK
+
             self._window_x = np.tile  (np.arange(OFFSET_X, columns*WINDOW_X+OFFSET_X, WINDOW_X, dtype=np.uint32), rows)
+            self._window_max_x = self._window_x + WINDOW_X
             self._window_y = np.repeat(np.arange(OFFSET_Y, rows   *WINDOW_Y+OFFSET_Y, WINDOW_Y, dtype=np.uint32), columns)
 
-            Snakes.screen = pygame.display.set_mode((WINDOW_X * self.BLOCK * columns, WINDOW_Y * self.BLOCK * rows))
-            rect = 0, 0, WINDOW_X * self.BLOCK * columns, WINDOW_Y * self.BLOCK * rows
+            Snakes.screen = pygame.display.set_mode((WINDOW_X * columns, WINDOW_Y * rows))
+            rect = 0, 0, WINDOW_X * columns, WINDOW_Y * rows
             Snakes.updates = [rect]
             pygame.draw.rect(Snakes.screen, Snakes.WALL, rect)
 
@@ -195,11 +220,17 @@ class Snakes:
         offset = self._view_y
         return np.random.randint(offset, offset+self.HEIGHT, size=nr, dtype=TYPE_POS)
 
-    def score(self):
+    def scores(self):
         return self._body_length
 
-    def nr_moves(self):
-        return self._cur_move - self._nr_moves
+    def score(self, i):
+        return self._body_length[i]
+
+    # def nr_moves(self):
+    #    return self._cur_move - self._nr_moves
+
+    def nr_moves(self, i):
+        return self._cur_move - self._nr_moves[i]
 
     def head_x(self):
         return self._head_x
@@ -275,25 +306,54 @@ class Snakes:
             todo = todo[fail != 0]
             # print("todo", todo)
 
-    def draw_start(self):
-        self.draw_blocks(self.last_collision_x, self.last_collision_y, Snakes.WALL)
-        self.last_collision_x.fill(0)
-        self.last_collision_y.fill(0)
+    def measure_text(self, text):
+        rect = self._font.get_rect(text)
+        return rect.width
 
-    def draw_block(self, x, y, color):
+    def draw_text(self, w, x, y, text, old_rect=None,
+                  fg_color=BACKGROUND, bg_color=WALL):
+        # Erase old text
+        if old_rect:
+            pygame.draw.rect(Snakes.screen, bg_color, old_rect)
+            Snakes.updates.append(old_rect)
+
+        # Draw new text
+        x += self._window_x[w]
+        y += self._window_y[w]
+        rect = self._font.get_rect(text)
+        rect.x = x + rect.x
+        rect.y = y - rect.y
+        # print("Draw text", w, x, y, '"%s"' % text, x + self._window_x[w], y + self._window_y[w], rect, old_rect)
+        if rect.x + rect.width > self._window_max_x[w]:
+            return None
+        self._font.render_to(
+            Snakes.screen,
+            (x, y),
+            None, fg_color, bg_color)
+        Snakes.updates.append(rect)
+        return rect
+
+    def draw_block(self, w, x, y, color):
         # print("Draw (%d,%d,%d): %d,%d,%d" % (pos+color))
-        rect = x*self.BLOCK+EDGE, y*self.BLOCK+EDGE, self.DRAW_BLOCK, self.DRAW_BLOCK
+        rect = (x * self.BLOCK + self._window_x[w] + EDGE,
+                y * self.BLOCK + self._window_y[w] + EDGE,
+                self.DRAW_BLOCK,
+                self.DRAW_BLOCK)
         Snakes.updates.append(rect)
         pygame.draw.rect(Snakes.screen, color, rect)
 
     def draw_blocks(self, x, y, color):
         # print("X", x)
         # print("Y", y)
-        for i in range(self._windows):
-            self.draw_block(x[i] + self._window_x[i], y[i] + self._window_y[i], color)
+        for w in range(self._windows):
+            self.draw_block(w, x[w], y[w], color)
 
     def draw_apples(self):
         self.draw_blocks(self._apple_x, self._apple_y, Snakes.APPLE)
+        for w in range(self._windows):
+            self._last_text_score[w] = self.draw_text(
+                w, self._text_score, self.BASE_TEXT, "%4u" % self.score(w),
+                self._last_text_score[w])
 
     def draw_heads(self):
         self.draw_blocks(self.head_x(), self.head_y(), Snakes.HEAD)
@@ -306,10 +366,24 @@ class Snakes:
                 break
             if False:
                 if self._nr_moves[w] != self._cur_move:
-                    self.draw_block(x[w] + self._window_x[w],
-                                    y[w] + self._window_y[w], Snakes.COLLISION)
+                    self.draw_block(w, x[w], y[w], Snakes.COLLISION)
             else:
-                rect = (self._window_x[w]+1) * self.BLOCK, (self._window_y[w]+1) * self.BLOCK, self.WIDTH*self.BLOCK, self.HEIGHT*self.BLOCK
+                self.draw_block(w,
+                                self.last_collision_x[w],
+                                self.last_collision_y[w],
+                                Snakes.WALL)
+
+                pos_x = int(self.BLOCK * TEXT_SCORE_X)
+                self.draw_text(w, pos_x, self.BASE_TEXT, TEXT_SCORE)
+                pos_x = int(self.BLOCK * TEXT_MOVE_X)
+                self.draw_text(w, pos_x, self.BASE_TEXT, TEXT_MOVE)
+                pos_x = int(self.BLOCK * TEXT_SNAKE_X)
+                self.draw_text(w, pos_x, self.BASE_TEXT, "%s%2u" % (TEXT_SNAKE, w))
+
+                rect = (self._window_x[w] + self.BLOCK,
+                        self._window_y[w] + self.BLOCK,
+                        self.WIDTH  * self.BLOCK,
+                        self.HEIGHT * self.BLOCK)
                 Snakes.updates.append(rect)
                 pygame.draw.rect(Snakes.screen, Snakes.BACKGROUND, rect)
 
@@ -318,11 +392,12 @@ class Snakes:
         head_y = self.head_y()
         for w in range(self._windows):
             if not is_collision[w]:
-                self.draw_block(head_x[w] + self._window_x[w],
-                                head_y[w] + self._window_y[w], Snakes.BODY)
+                self.draw_block(w, head_x[w], head_y[w], Snakes.BODY)
             if not eat[w]:
-                self.draw_block(x[w] + self._window_x[w],
-                                y[w] + self._window_y[w], Snakes.BACKGROUND)
+                self.draw_block(w, x[w], y[w], Snakes.BACKGROUND)
+            self._last_text_move[w] = self.draw_text(
+                w, self._text_move, self.BASE_TEXT, "%6u" % self.nr_moves(w),
+                self._last_text_move[w])
 
     def plan_greedy(self):
         x = self.head_x()
@@ -370,6 +445,7 @@ class Snakes:
 
     def update(self):
         # pygame.display.update()
+        # return
         if Snakes.updates:
             # print("Real update")
             pygame.display.update(Snakes.updates)
@@ -396,7 +472,6 @@ class Snakes:
         return frames / elapsed
 
     def draw_run(self, fps=40, stepping=False):
-        self.draw_start()
         # print("New game, head=%d [%d, %d]" % self.head())
         # print(self.view_string())
 
@@ -492,7 +567,7 @@ class Snakes:
                     elif event.type == KEYDOWN:
                         # events seem to come without time
                         time = timeit.default_timer()
-                        if event.key == K_RETURN or event.key == K_r:
+                        if event.key == K_SPACE or event.key == K_r:
                             # Stop/start running
                             time_target = time
                             if pause_start:
@@ -543,6 +618,6 @@ snakes.display_start(columns=columns, rows=rows, block_size = block_size)
 
 while snakes.draw_run(fps=float(arguments["--fps"]), stepping=arguments["--stepping"]):
     pass
-print("Score", snakes.score(), "Framerate", snakes.frame_rate())
+print("Score", snakes.scores(), "Framerate", snakes.frame_rate())
 
 snakes.display_stop()
