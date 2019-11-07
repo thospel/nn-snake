@@ -68,12 +68,14 @@ def np_empty(shape, type):
 
 
 # +
-TEXT_MOVE    = "Move: "
-TEXT_MOVE_X  = 8
 TEXT_SCORE   = "Score: "
 TEXT_SCORE_X = 1
+TEXT_GAME    = "Game: "
+TEXT_GAME_X  = 7
+TEXT_MOVE    = "Move: "
+TEXT_MOVE_X  = 13
 TEXT_SNAKE   = "Snake: "
-TEXT_SNAKE_X = 15
+TEXT_SNAKE_X = 20
 
 POLL_DEFAULT = 1/25
 KEY_INTERVAL = int(1000 / 20)  # twenty per second
@@ -89,6 +91,7 @@ TYPE_INDEX = np.intp
 TYPE_FLAG  = np.uint8
 TYPE_SCORE = np.uint32
 TYPE_MOVES = np.uint32
+TYPE_GAMES = np.uint32
 EDGE=1
 BLOCK_DEFAULT=20
 
@@ -160,6 +163,7 @@ class Snakes:
         self._apple_x  = np_empty(nr_snakes, TYPE_POS)
         self._apple_y  = np_empty(nr_snakes, TYPE_POS)
         self._nr_moves = np_empty(nr_snakes, TYPE_MOVES)
+        self._nr_games = np_empty(nr_snakes, TYPE_GAMES)
 
     # You can only have one pygame instance in one process,
     # so make display related variables into class variables
@@ -182,6 +186,8 @@ class Snakes:
 
             pos_x = int(self.BLOCK * TEXT_SCORE_X)
             self._text_score = pos_x + self.measure_text(TEXT_SCORE)
+            pos_x = int(self.BLOCK * TEXT_GAME_X)
+            self._text_game = pos_x + self.measure_text(TEXT_GAME)
             pos_x = int(self.BLOCK * TEXT_MOVE_X)
             self._text_move  = pos_x + self.measure_text(TEXT_MOVE)
             pos_x = int(self.BLOCK * TEXT_SNAKE_X)
@@ -189,6 +195,7 @@ class Snakes:
 
             self._last_text_move  = [None]*self._windows
             self._last_text_score = [None]*self._windows
+            self._last_text_game  = [None]*self._windows
 
             self.last_collision_x = np.zeros(self._windows, dtype=TYPE_PIXELS)
             self.last_collision_y = np.zeros(self._windows, dtype=TYPE_PIXELS)
@@ -226,11 +233,23 @@ class Snakes:
     def score(self, i):
         return self._body_length[i]
 
+    def score_max(self):
+        return self._score_max
+
     # def nr_moves(self):
     #    return self._cur_move - self._nr_moves
 
     def nr_moves(self, i):
         return self._cur_move - self._nr_moves[i]
+
+    def nr_moves_max(self):
+        return self._moves_max
+
+    def nr_games(self, i):
+        return self._nr_games[i]
+
+    def nr_games_max(self):
+        return self._nr_games_max
 
     def head_x(self):
         return self._head_x
@@ -375,6 +394,8 @@ class Snakes:
 
                 pos_x = int(self.BLOCK * TEXT_SCORE_X)
                 self.draw_text(w, pos_x, self.BASE_TEXT, TEXT_SCORE)
+                pos_x = int(self.BLOCK * TEXT_GAME_X)
+                self._last_text_game[w] = self.draw_text(w, pos_x, self.BASE_TEXT, "%s%3u" % (TEXT_GAME, self.nr_games(w)), self._last_text_game[w])
                 pos_x = int(self.BLOCK * TEXT_MOVE_X)
                 self.draw_text(w, pos_x, self.BASE_TEXT, TEXT_MOVE)
                 pos_x = int(self.BLOCK * TEXT_SNAKE_X)
@@ -484,6 +505,10 @@ class Snakes:
         self._apple_x.fill(0)
         self._apple_y.fill(0)
 
+        self._nr_games.fill(0)
+        self._nr_games_max = -1
+        self._score_max = -1
+        self._moves_max = -1
         self._cur_move = Snakes.START_MOVE-1
         self._paused = 0
         time_step = 1/fps if fps > 0 else 0
@@ -504,9 +529,21 @@ class Snakes:
             collided = is_collision.nonzero()[0]
             # print("Collided", collided)
             if collided.size:
-                self._field[collided, self._view_y:self._view_y+self.HEIGHT, self._view_x:self._view_x+self.WIDTH] = 0
+                if self._score_max < 0:
+                    self._score_max = 0
+                    self._moves_max = 0
+                else:
+                    score_max = np.amax(self._body_length[collided])
+                    if score_max > self._score_max:
+                        self._score_max = score_max
+                    moves_max = self._cur_move - np.amin(self._nr_moves[collided])
+                    if moves_max > self._moves_max:
+                        self._moves_max = moves_max
+                    self._nr_games[collided] += 1
 
-                self._nr_moves[collided] = self._cur_move
+                self._field[collided, self._view_y:self._view_y+self.HEIGHT, self._view_x:self._view_x+self.WIDTH] = 0
+                # We are currently doing setup, so this move doesn't count
+                self._nr_moves[collided] = self._cur_move + 1
                 self._body_length[collided]  = 0
                 self.draw_collisions(collided, x, y)
                 rand_x = self.rand_x(collided.size)
@@ -519,10 +556,11 @@ class Snakes:
             self._body_length += eat
             if collided.size:
                 eat[collided] = True
-            self.draw_pre_move(is_collision, eat, tail_pos_x, tail_pos_y)
 
             # cur_move must be updated before head_set for head progress
+            # Also before draw_pre_move so nr moves will be correct
             self._cur_move += 1
+            self.draw_pre_move(is_collision, eat, tail_pos_x, tail_pos_y)
             self.head_set(x, y)
             self.draw_heads()
 
@@ -559,6 +597,15 @@ class Snakes:
                         if pause_start:
                             self._paused += self._time_end - pause_start
                             self._frames_skipped += self.frame() - frame_start
+
+                        score_max = np.amax(self._body_length)
+                        if score_max > self._score_max:
+                            self._score_max = score_max
+                        moves_max = self._cur_move - np.amin(self._nr_moves)
+                        if moves_max > self._moves_max:
+                            self._moves_max = moves_max
+                        self._nr_games_max = np.amax(self._nr_games)
+
                         #print("Quit at", self._time_end - self._time_start,
                         #      "Paused", self.paused(),
                         #      "frame", self.frame(),
@@ -618,6 +665,7 @@ snakes.display_start(columns=columns, rows=rows, block_size = block_size)
 
 while snakes.draw_run(fps=float(arguments["--fps"]), stepping=arguments["--stepping"]):
     pass
-print("Score", snakes.scores(), "Framerate", snakes.frame_rate())
+print("Framerate", snakes.frame_rate())
+print("Max: Score:", snakes.score_max(), "Moves:", snakes.nr_moves_max(), "Lost Games:", snakes.nr_games_max())
 
 snakes.display_stop()
