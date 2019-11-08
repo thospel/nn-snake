@@ -48,6 +48,8 @@ arguments
 # %matplotlib inline
 from matplotlib import pyplot as plt
 
+from dataclasses import dataclass
+from typing import List
 import random
 import math
 import itertools
@@ -60,6 +62,277 @@ import pygame
 import pygame.freetype
 from pygame.locals import *
 
+
+# +
+@dataclass
+class TextField:
+    name:   str
+    prefix: str
+    width:  int
+
+@dataclass
+class TextRow:
+    x:           int
+    y:           int
+    max_width:   int
+    text_fields: List[TextField]
+
+@dataclass
+class _TextRows:
+    font:        pygame.freetype.Font
+    skip:        str = "  "
+
+@dataclass
+class TextData:
+    y:          int
+    prefix_x:   int
+    prefix:     str
+    format_x:   int
+    format:     str
+    max_width:  int
+    old_rect:   List[pygame.Rect]
+
+class TextRows(_TextRows):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args,**kwargs)
+
+        rect = self.font.get_rect(self.skip)
+        self.skip_width = rect.width
+        # assume 8 is widest
+        rect = self.font.get_rect("8")
+        self.digit_width = rect.width
+        self._lookup = {}
+
+    def add(self, text_row, windows=1):
+        x = text_row.x
+        y = text_row.y
+        for text_field in text_row.text_fields:
+            pos_prefix = x
+            rect = self.font.get_rect(text_field.prefix)
+            x += rect.width
+            pos_format = x
+            x += self.digit_width * text_field.width + self.skip_width
+
+            if text_field.name in self._lookup:
+                raise(AssertionError("Duplicate name %s", text_field.name))
+            self._lookup[text_field.name] = TextData(
+                y         = y,
+                prefix_x  = pos_prefix,
+                prefix    = text_field.prefix,
+                format_x  = pos_format,
+                format    = "%%%du" % text_field.width,
+                max_width = text_row.max_width,
+                old_rect  = [None]*windows)
+
+    def lookup(self, name):
+        return self._lookup[name]
+
+
+# +
+ROW_TOP = [TextField("score", "Score: ", 4),
+           TextField("game",  "Game: ",  4),
+           TextField("moves", "Moves: ", 6),
+           TextField("snake", "Id: ",    2),
+           # TextField("x",     "x: ",     2),
+           # TextField("y",     "y: ",     2),
+]
+
+# This must be signed because window offsets can be negative
+TYPE_PIXELS = np.int32
+
+class Display:
+    WALL  = 255,255,255
+    BODY  = 160,160,160
+    HEAD  = 200,200,0
+    BACKGROUND = 0,0,0
+    APPLE = 0,255,0
+    COLLISION = 255,0,0
+
+    BLOCK_DEFAULT=20
+    EDGE=1
+
+    # we test these at the start of some functions
+    # Make sure they have a "nothing to see here" value in case __init__ fails
+    screen = None
+    updates = []
+
+    # You can only have one pygame instance in one process,
+    # so make display related variables into class variables
+    def __init__(self, snakes, columns=0, rows=1, block_size=0, caption="Snakes"):
+        self.windows = rows*columns
+        if not self.windows:
+            return
+
+        self.caption = caption
+
+        self.BLOCK = block_size or Display.BLOCK_DEFAULT
+        self.DRAW_BLOCK = self.BLOCK-2*Display.EDGE
+
+        # coordinates relative to the upper left corner of the window
+        self.TOP_TEXT_X  = self.BLOCK
+        self.TOP_TEXT_Y  = self.DRAW_BLOCK
+
+        self.WINDOW_X = (snakes.WIDTH +2) * self.BLOCK
+        self.WINDOW_Y = (snakes.HEIGHT+2) * self.BLOCK
+        self.OFFSET_X = (1-snakes.VIEW_X) * self.BLOCK
+        self.OFFSET_Y = (1-snakes.VIEW_Y) * self.BLOCK
+
+        self._window_x = np.tile  (np.arange(self.OFFSET_X, columns*self.WINDOW_X+self.OFFSET_X, self.WINDOW_X, dtype=TYPE_PIXELS), rows)
+        self._window_y = np.repeat(np.arange(self.OFFSET_Y, rows   *self.WINDOW_Y+self.OFFSET_Y, self.WINDOW_Y, dtype=TYPE_PIXELS), columns)
+        # print("window_x", self._window_x)
+        # print("window_y", self._window_y)
+
+        # self.last_collision_x = np.zeros(self.windows, dtype=TYPE_PIXELS)
+        # self.last_collision_y = np.zeros(self.windows, dtype=TYPE_PIXELS)
+
+    def start(self):
+        if not self.windows:
+            return
+        # Avoid pygame.init() since the init of the mixer component leads to 100% CPU
+        pygame.display.init()
+        pygame.display.set_caption(self.caption)
+        # pygame.mouse.set_visible(1)
+        pygame.key.set_repeat(KEY_DELAY, KEY_INTERVAL)
+
+        pygame.freetype.init()
+        self._font = pygame.freetype.Font(None, self.BLOCK)
+        self._font.origin = True
+
+        self._textrows = TextRows(font=self._font)
+        self._textrows.add(TextRow(self.TOP_TEXT_X - self.OFFSET_X,
+                                   self.TOP_TEXT_Y - self.OFFSET_Y,
+                                   self.WINDOW_X, ROW_TOP), self.windows)
+
+        Display.screen = pygame.display.set_mode((self.WINDOW_X * columns, self.WINDOW_Y * rows))
+        rect = 0, 0, self.WINDOW_X * columns, self.WINDOW_Y * rows
+        Display.updates = [rect]
+        pygame.draw.rect(Display.screen, Display.WALL, rect)
+
+    def stop(self):
+        if not Display.screen:
+            return
+
+        Display.screen  = None
+        Display.updates = []
+        pygame.quit()
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
+
+    def __del__(self):
+        self.stop()
+
+    def update(self):
+        if Display.updates:
+            self._time_start  = timeit.default_timer()
+            pygame.display.update(Display.updates)
+            # print("Update took", int((timeit.default_timer() - self._time_start)*1000), "updates\n", Display.updates)
+            Display.updates = []
+
+    def draw_text(self, w, name, value=None,
+                       fg_color=BACKGROUND, bg_color=WALL):
+        text_data = self._textrows.lookup(name)
+
+        if value is None:
+            text = text_data.prefix
+            x = text_data.prefix_x
+        else:
+            text = text_data.format % value
+            # Erase old text
+            old_rect = text_data.old_rect[w]
+            if old_rect:
+                pygame.draw.rect(Display.screen, bg_color, old_rect)
+                Display.updates.append(old_rect)
+            x = text_data.format_x
+        y = text_data.y
+
+        # Draw new text
+        rect = self._font.get_rect(text)
+        rect.x += x
+        if rect.x + rect.width > text_data.max_width:
+            return None
+        x += self._window_x[w]
+        y += self._window_y[w]
+        rect.x += self._window_x[w]
+        rect.y = y - rect.y
+        # print("Draw text", w, x, y, '"%s"' % text, x + self._window_x[w], y + self._window_y[w], rect, old_rect)
+        self._font.render_to(Display.screen, (x, y), None, fg_color, bg_color)
+        Display.updates.append(rect)
+        if value is not None:
+            # Remember what we updated
+            text_data.old_rect[w] = rect
+
+    def draw_field_empty(self, w):
+        rect = (self._window_x[w] - self.OFFSET_X + self.BLOCK,
+                self._window_y[w] - self.OFFSET_Y + self.BLOCK,
+                self.WINDOW_X - 2 * self.BLOCK,
+                self.WINDOW_Y - 2 * self.BLOCK)
+        pygame.draw.rect(Display.screen, Display.BACKGROUND, rect)
+        Display.updates.append(rect)
+
+    def draw_block(self, w, x, y, color):
+        rect = (x * self.BLOCK + self._window_x[w] + Display.EDGE,
+                y * self.BLOCK + self._window_y[w] + Display.EDGE,
+                self.DRAW_BLOCK,
+                self.DRAW_BLOCK)
+
+        # print("Draw %d (%d,%d): %d,%d,%d: [%d %d %d %d]" % ((w, x, y)+color+(rect)))
+        Display.updates.append(rect)
+        pygame.draw.rect(Display.screen, color, rect)
+
+    def draw_collisions(self, all_windows, w_index, x, y, nr_games):
+        for w in w_index:
+            i = all_windows[w]
+            if False:
+                # This test was for when the idea was to freeze some snakes
+                # if self._nr_moves[w] > self._cur_move:
+                self.draw_block(w, x[i], y[i], Display.COLLISION)
+            else:
+                #self.draw_block(w,
+                #                self.last_collision_x[w],
+                #                self.last_collision_y[w],
+                #                Display.WALL)
+                self.draw_text(w, "score")
+                self.draw_text(w, "game")
+                self.draw_text(w, "game", nr_games[i])
+                self.draw_text(w, "moves")
+                self.draw_text(w, "snake")
+                self.draw_text(w, "snake", i)
+                # self.draw_text(w, "x")
+                # self.draw_text(w, "y")
+                self.draw_field_empty(w)
+
+    def draw_move(self,
+                  all_windows, head_x_new, head_y_new,
+                  is_collision, head_x_old, head_y_old,
+                  eat, tail_x, tail_y,
+                  w_nr_moves):
+        for w in range(all_windows.size):
+            i = all_windows[w]
+            if not is_collision[i]:
+                # The current head becomes body
+                # (For length 1 snakes the following tail erase will undo this)
+                self.draw_block(w, head_x_old[i], head_y_old[i], Display.BODY)
+            if not eat[i]:
+                # Drop the tail if we didn't eat an apple then
+                self.draw_block(w, tail_x[i], tail_y[i], Display.BACKGROUND)
+            self.draw_block(w, head_x_new[i], head_y_new[i], Display.HEAD)
+            self.draw_text(w, "moves", w_nr_moves[w])
+            # self.draw_text(w, "x", head_x_new[i])
+            # self.draw_text(w, "y", head_y_new[i])
+
+    def draw_apples(self, all_windows, w_index, apple_x, apple_y, score):
+        for w in w_index:
+            i = all_windows[w]
+            self.draw_block(w, apple_x[i], apple_y[i], Display.APPLE)
+            self.draw_text(w, "score", score[i])
+
+
+# -
 
 def np_empty(shape, type):
     # return np.empty(shape, type)
@@ -77,7 +350,8 @@ TEXT_MOVE_X  = 13
 TEXT_SNAKE   = "Snake: "
 TEXT_SNAKE_X = 20
 
-POLL_DEFAULT = 1/25
+POLL_SLOW_DEFAULT = 1/25
+POLL_FAST_DEFAULT = 1/40
 KEY_INTERVAL = int(1000 / 20)  # twenty per second
 KEY_DELAY = 500           # Start repeating after half a second
 
@@ -85,18 +359,15 @@ WIDTH_DEFAULT  = 40
 HEIGHT_DEFAULT = 40
 E_POS = np.uint8
 TYPE_POS   = np.int8
-TYPE_PIXELS = np.uint16
 TYPE_BOOL  = np.bool
 TYPE_INDEX = np.intp
 TYPE_FLAG  = np.uint8
 TYPE_SCORE = np.uint32
 TYPE_MOVES = np.uint32
 TYPE_GAMES = np.uint32
-EDGE=1
-BLOCK_DEFAULT=20
 
-VIEW_X0 = 1
-VIEW_Y0 = 1
+VIEW_X0 = 2
+VIEW_Y0 = 2
 VIEW_X2 = VIEW_X0+2
 VIEW_Y2 = VIEW_Y0+2
 VIEW_WIDTH  = 2*VIEW_X0+1
@@ -108,13 +379,6 @@ INDEX_WALL  = 2
 INDEX_MAX   = 3
 
 class Snakes:
-    WALL  = 255,255,255
-    BODY  = 160,160,160
-    HEAD  = 200,200,0
-    BACKGROUND = 0,0,0
-    APPLE = 0,255,0
-    COLLISION = 255,0,0
-
     START_MOVE = 1
 
     DIRECTIONS = [[1,0],[-1,0],[0,1],[0,-1]]
@@ -124,13 +388,13 @@ class Snakes:
     DIRECTION_PERMUTATIONS_Y=DIRECTION_PERMUTATIONS[:,:,1]
 
     def __init__(self, nr_snakes=1, width=0, height=0, view_x=0, view_y=0):
-        self._windows = None
+        self.windows = None
 
         self._nr_snakes = nr_snakes
         self._all_snakes = np.arange(nr_snakes, dtype=TYPE_INDEX)
 
-        self._view_x = view_x or VIEW_X0
-        self._view_y = view_y or VIEW_Y0
+        self.VIEW_X = view_x or VIEW_X0
+        self.VIEW_Y = view_y or VIEW_Y0
         self.WIDTH  = width  or WIDTH_DEFAULT
         self.HEIGHT = height or HEIGHT_DEFAULT
         self.AREA   = self.WIDTH * self.HEIGHT
@@ -140,8 +404,8 @@ class Snakes:
 
         # Notice that we store in row major order, so use field[y,x]
         self._field = np.ones((nr_snakes,
-                               self.HEIGHT+2*self._view_y,
-                               self.WIDTH +2*self._view_x), dtype=TYPE_FLAG)
+                               self.HEIGHT+2*self.VIEW_Y,
+                               self.WIDTH +2*self.VIEW_X), dtype=TYPE_FLAG)
         # Position arrays are split in x and y so we can do fast _field indexing
         self._snake_body_x = np_empty((nr_snakes, self.AREA2), TYPE_POS)
         self._snake_body_y = np_empty((nr_snakes, self.AREA2), TYPE_POS)
@@ -165,66 +429,12 @@ class Snakes:
         self._nr_moves = np_empty(nr_snakes, TYPE_MOVES)
         self._nr_games = np_empty(nr_snakes, TYPE_GAMES)
 
-    # You can only have one pygame instance in one process,
-    # so make display related variables into class variables
-    def display_start(self, columns=0, rows=1, block_size=0):
-        self.BLOCK = block_size or BLOCK_DEFAULT
-        self.DRAW_BLOCK = self.BLOCK-2*EDGE
-        self.BASE_TEXT  = self.BLOCK-2*EDGE
-
-        self._windows = rows*columns
-        if self._windows:
-            # Avoid pygame.init() since the init of the mixer component leads to 100% CPU
-            pygame.display.init()
-            pygame.display.set_caption('Snakes')
-            # pygame.mouse.set_visible(1)
-            pygame.key.set_repeat(KEY_DELAY, KEY_INTERVAL)
-
-            pygame.freetype.init()
-            self._font = pygame.freetype.Font(None, self.BLOCK)
-            self._font.origin = True
-
-            pos_x = int(self.BLOCK * TEXT_SCORE_X)
-            self._text_score = pos_x + self.measure_text(TEXT_SCORE)
-            pos_x = int(self.BLOCK * TEXT_GAME_X)
-            self._text_game = pos_x + self.measure_text(TEXT_GAME)
-            pos_x = int(self.BLOCK * TEXT_MOVE_X)
-            self._text_move  = pos_x + self.measure_text(TEXT_MOVE)
-            pos_x = int(self.BLOCK * TEXT_SNAKE_X)
-            self._text_snake = pos_x + self.measure_text(TEXT_SNAKE)
-
-            self._last_text_move  = [None]*self._windows
-            self._last_text_score = [None]*self._windows
-            self._last_text_game  = [None]*self._windows
-
-            self.last_collision_x = np.zeros(self._windows, dtype=TYPE_PIXELS)
-            self.last_collision_y = np.zeros(self._windows, dtype=TYPE_PIXELS)
-
-            WINDOW_X = (self.WIDTH+2)   * self.BLOCK
-            WINDOW_Y = (self.HEIGHT+2)  * self.BLOCK
-            OFFSET_X = (self._view_x-1) * self.BLOCK
-            OFFSET_Y = (self._view_y-1) * self.BLOCK
-
-            self._window_x = np.tile  (np.arange(OFFSET_X, columns*WINDOW_X+OFFSET_X, WINDOW_X, dtype=np.uint32), rows)
-            self._window_max_x = self._window_x + WINDOW_X
-            self._window_y = np.repeat(np.arange(OFFSET_Y, rows   *WINDOW_Y+OFFSET_Y, WINDOW_Y, dtype=np.uint32), columns)
-
-            Snakes.screen = pygame.display.set_mode((WINDOW_X * columns, WINDOW_Y * rows))
-            rect = 0, 0, WINDOW_X * columns, WINDOW_Y * rows
-            Snakes.updates = [rect]
-            pygame.draw.rect(Snakes.screen, Snakes.WALL, rect)
-
-    def display_stop(self):
-        if self._windows:
-            Snakes.screen = None
-            pygame.quit()
-
     def rand_x(self, nr):
-        offset = self._view_x
+        offset = self.VIEW_X
         return np.random.randint(offset, offset+self.WIDTH,  size=nr, dtype=TYPE_POS)
 
     def rand_y(self, nr):
-        offset = self._view_y
+        offset = self.VIEW_Y
         return np.random.randint(offset, offset+self.HEIGHT, size=nr, dtype=TYPE_POS)
 
     def scores(self):
@@ -282,6 +492,7 @@ class Snakes:
         self._field[self._all_snakes, y, x] = values
         return x, y
 
+    """
     def view_string(self):
         port = self.view_port()
         str = ""
@@ -308,6 +519,7 @@ class Snakes:
     def view_port(self):
         index,x,y = self.head()
         return self._field[:,x-VIEW_X0:x+VIEW_X2,y-VIEW_Y0:y+VIEW_Y2]
+    """
 
     def new_apples(self, todo):
         too_large = self._body_length[todo] >= self.AREA-1
@@ -325,100 +537,8 @@ class Snakes:
             todo = todo[fail != 0]
             # print("todo", todo)
 
-    def measure_text(self, text):
-        rect = self._font.get_rect(text)
-        return rect.width
-
-    def draw_text(self, w, x, y, text, old_rect=None,
-                  fg_color=BACKGROUND, bg_color=WALL):
-        # Erase old text
-        if old_rect:
-            pygame.draw.rect(Snakes.screen, bg_color, old_rect)
-            Snakes.updates.append(old_rect)
-
-        # Draw new text
-        x += self._window_x[w]
-        y += self._window_y[w]
-        rect = self._font.get_rect(text)
-        rect.x = x + rect.x
-        rect.y = y - rect.y
-        # print("Draw text", w, x, y, '"%s"' % text, x + self._window_x[w], y + self._window_y[w], rect, old_rect)
-        if rect.x + rect.width > self._window_max_x[w]:
-            return None
-        self._font.render_to(
-            Snakes.screen,
-            (x, y),
-            None, fg_color, bg_color)
-        Snakes.updates.append(rect)
-        return rect
-
-    def draw_block(self, w, x, y, color):
-        # print("Draw (%d,%d,%d): %d,%d,%d" % (pos+color))
-        rect = (x * self.BLOCK + self._window_x[w] + EDGE,
-                y * self.BLOCK + self._window_y[w] + EDGE,
-                self.DRAW_BLOCK,
-                self.DRAW_BLOCK)
-        Snakes.updates.append(rect)
-        pygame.draw.rect(Snakes.screen, color, rect)
-
-    def draw_blocks(self, x, y, color):
-        # print("X", x)
-        # print("Y", y)
-        for w in range(self._windows):
-            self.draw_block(w, x[w], y[w], color)
-
-    def draw_apples(self):
-        self.draw_blocks(self._apple_x, self._apple_y, Snakes.APPLE)
-        for w in range(self._windows):
-            self._last_text_score[w] = self.draw_text(
-                w, self._text_score, self.BASE_TEXT, "%4u" % self.score(w),
-                self._last_text_score[w])
-
     def draw_heads(self):
-        self.draw_blocks(self.head_x(), self.head_y(), Snakes.HEAD)
-
-    def draw_collisions(self, collided, x, y):
-        # Does numpy have a simple lazy loop ?
-        for i in range(collided.size):
-            w = collided[i]
-            if w >= self._windows:
-                break
-            if False:
-                if self._nr_moves[w] != self._cur_move:
-                    self.draw_block(w, x[w], y[w], Snakes.COLLISION)
-            else:
-                self.draw_block(w,
-                                self.last_collision_x[w],
-                                self.last_collision_y[w],
-                                Snakes.WALL)
-
-                pos_x = int(self.BLOCK * TEXT_SCORE_X)
-                self.draw_text(w, pos_x, self.BASE_TEXT, TEXT_SCORE)
-                pos_x = int(self.BLOCK * TEXT_GAME_X)
-                self._last_text_game[w] = self.draw_text(w, pos_x, self.BASE_TEXT, "%s%3u" % (TEXT_GAME, self.nr_games(w)), self._last_text_game[w])
-                pos_x = int(self.BLOCK * TEXT_MOVE_X)
-                self.draw_text(w, pos_x, self.BASE_TEXT, TEXT_MOVE)
-                pos_x = int(self.BLOCK * TEXT_SNAKE_X)
-                self.draw_text(w, pos_x, self.BASE_TEXT, "%s%2u" % (TEXT_SNAKE, w))
-
-                rect = (self._window_x[w] + self.BLOCK,
-                        self._window_y[w] + self.BLOCK,
-                        self.WIDTH  * self.BLOCK,
-                        self.HEIGHT * self.BLOCK)
-                Snakes.updates.append(rect)
-                pygame.draw.rect(Snakes.screen, Snakes.BACKGROUND, rect)
-
-    def draw_pre_move(self, is_collision, eat, x, y):
-        head_x = self.head_x()
-        head_y = self.head_y()
-        for w in range(self._windows):
-            if not is_collision[w]:
-                self.draw_block(w, head_x[w], head_y[w], Snakes.BODY)
-            if not eat[w]:
-                self.draw_block(w, x[w], y[w], Snakes.BACKGROUND)
-            self._last_text_move[w] = self.draw_text(
-                w, self._text_move, self.BASE_TEXT, "%6u" % self.nr_moves(w),
-                self._last_text_move[w])
+        self.draw_blocks(self.head_x(), self.head_y(), Display.HEAD)
 
     def plan_greedy(self):
         x = self.head_x()
@@ -464,14 +584,6 @@ class Snakes:
         pos_y[i] = y[select, i]
         return pos_x, pos_y
 
-    def update(self):
-        # pygame.display.update()
-        # return
-        if Snakes.updates:
-            # print("Real update")
-            pygame.display.update(Snakes.updates)
-            Snakes.updates = []
-
     def frame(self):
         return self._cur_move - Snakes.START_MOVE
 
@@ -492,164 +604,207 @@ class Snakes:
             return math.inf * frames
         return frames / elapsed
 
-    def draw_run(self, fps=40, stepping=False):
-        # print("New game, head=%d [%d, %d]" % self.head())
+    def move_collisions(self, display, x, y):
+        is_collision = self._field[self._all_snakes, y, x]
+        collided = is_collision.nonzero()[0]
+        # print("Collided", collided)
+        if collided.size:
+            if self._score_max < 0:
+                self._score_max = 0
+                self._moves_max = 0
+            else:
+                self._nr_games[collided] += 1
+                nr_games_max = np.amax(self._nr_games[collided])
+                if nr_games_max > self._nr_games_max:
+                    self._nr_games_max = nr_games_max
+                score_max = np.amax(self._body_length[collided])
+                if score_max > self._score_max:
+                    self._score_max = score_max
+                moves_max = self._cur_move - np.amin(self._nr_moves[collided])
+                if moves_max > self._moves_max:
+                    self._moves_max = moves_max
+
+            # After the test because it skips the first _nr_games update
+            w_index = is_collision[self._all_windows].nonzero()[0]
+            display.draw_collisions(self._all_windows, w_index, x, y, self._nr_games)
+
+            self._field[collided, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH] = 0
+
+            # We are currently doing setup, so this move doesn't count
+            self._nr_moves[collided] = self._cur_move + 1
+
+            self._body_length[collided]  = 0
+            rand_x = self.rand_x(collided.size)
+            rand_y = self.rand_y(collided.size)
+            x[collided] = rand_x
+            y[collided] = rand_y
+        return is_collision, collided
+
+    def move_execute(self, display, x, y, is_collision, collided):
+        eat = (x == self._apple_x) & (y == self._apple_y)
+        tail_pos_x, tail_pos_y = self.tail_set(eat)
+        self._body_length += eat
+        if collided.size:
+            eat[collided] = True
+
+        # cur_move must be updated before head_set for head progress
+        # Also before draw_pre_move so nr moves will be correct
+        self._cur_move += 1
+        display.draw_move(self._all_windows, x, y,
+                          is_collision, self.head_x(), self.head_y(),
+                          eat, tail_pos_x, tail_pos_y,
+                          self._cur_move - self._nr_moves[self._all_windows])
+        self.head_set(x, y)
+
+        eaten = eat.nonzero()[0]
+        if eaten.size:
+            self.new_apples(eaten)
+            w_index = eat[self._all_windows].nonzero()[0]
+            display.draw_apples(self._all_windows, w_index, self._apple_x, self._apple_y, self._body_length)
+
         # print(self.view_string())
 
+        # print("Field\n", self._field)
+        #print("body_x", self._snake_body_x)
+        #print("body_y", self._snake_body_y)
+        # print("body")
+        # print(np.dstack((self._snake_body_x, self._snake_body_y)))
+        # print("Head")
+        # print(np.dstack((self.head_x(), self.head_y())))
+        # print("Apple")
+        # print(np.dstack((self._apple_x, self._apple_y)))
+        # print("-------------------")
+
+    def move_select(self):
+        x, y = self.plan_greedy()
+        collided = self._field[self._all_snakes, y, x].nonzero()[0]
+        # print("Greedy Collided", collided)
+        if collided.size:
+            rand_x, rand_y = self.plan_random(collided)
+            x[collided] = rand_x
+            y[collided] = rand_y
+        # print("Move")
+        # print(np.dstack((x, y)))
+        return x, y
+
+    def move_evaluate(self, display):
+        display.update()
+        return self.wait(display)
+
+    def run_start(self, display, fps=None, stepping=False):
+        nr_windows = min(self._nr_snakes, display.windows)
+        self._all_windows = np.arange(nr_windows-1, -1, -1, dtype=TYPE_INDEX)
+
         # Fake a collision for all snakes so all snakes will reset
-        is_collision = np.ones(self._nr_snakes, dtype=TYPE_FLAG)
-        x = np_empty(self._nr_snakes, TYPE_POS)
-        y = np_empty(self._nr_snakes, TYPE_POS)
+        x = np.zeros(self._nr_snakes, TYPE_POS)
+        y = np.zeros(self._nr_snakes, TYPE_POS)
 
         # Make sure we won't hit an apple left from a previous run
         self._apple_x.fill(0)
         self._apple_y.fill(0)
 
+        if fps is None:
+            self._poll_fast = POLL_FAST_DEFAULT
+        elif fps > 0:
+            self._poll_fast = 1 / fps
+        else:
+            self._poll_fast = 0
         self._nr_games.fill(0)
-        self._nr_games_max = -1
+        self._nr_games_max = 0
         self._score_max = -1
         self._moves_max = -1
         self._cur_move = Snakes.START_MOVE-1
+        self._stepping = stepping
         self._paused = 0
-        time_step = 1/fps if fps > 0 else 0
         # print("Start at time 0, frame", self.frame())
         self._time_start  = timeit.default_timer()
-        time_target = self._time_start
-        if stepping:
-            pause_start = self._time_start
-            time_step = POLL_DEFAULT
-            frame_start = self.frame()
+        self._time_target = self._time_start
+        if self._stepping:
+            self._pause_start = self._time_start
+            self._frame_start = self.frame()
             # When stepping the first frame doesn't count
             self._frames_skipped = -1
         else:
-            pause_start = 0
+            self._pause_start = 0
             self._frames_skipped = 0
+        return x, y
 
+    def run_finish(self):
+        score_max = np.amax(self._body_length)
+        if score_max > self._score_max:
+            self._score_max = score_max
+        moves_max = self._cur_move - np.amin(self._nr_moves)
+        if moves_max > self._moves_max:
+            self._moves_max = moves_max
+        # We could only measure nr_games_max here, but then
+        # we wouldn't have a running update
+        # self._nr_games_max = np.amax(self._nr_games)
+        self._all_windows = None
+
+        #print("Quit at", self._time_end - self._time_start,
+        #      "Paused", self.paused(),
+        #      "frame", self.frame(),
+        #      "Skipped", self.frames_skipped())
+
+    def wait(self, display):
+        waiting = True
+        while waiting:
+            if self._stepping:
+                self._stepping = False
+            elif self._pause_start or self._poll_fast:
+                left = int((self._time_target - timeit.default_timer())*1000)
+                if left > 0:
+                    pygame.time.wait(left)
+            for event in pygame.event.get():
+                if event.type == QUIT or event.type == KEYDOWN and event.key == K_q:
+                    self._time_end  = timeit.default_timer()
+                    if self._pause_start:
+                        self._paused += self._time_end - self._pause_start
+                        self._frames_skipped += self.frame() - self._frame_start
+
+                    return False
+                elif event.type == KEYDOWN:
+                    # events seem to come without time
+                    time = timeit.default_timer()
+                    if event.key == K_SPACE or event.key == K_r:
+                        # Stop/start running
+                        self._time_target = time
+                        if self._pause_start:
+                            self._paused += time - self._pause_start
+                            self._frames_skipped += self.frame() - self._frame_start
+                            # print("Start running at", time - self._time_start, "frame", self.frame())
+                            self._pause_start = 0
+                        else:
+                            # print("Stop running at", time-self._time_start, "frame", self.frame())
+                            self._pause_start = time
+                            self._frame_start = self.frame()
+                    elif event.key == K_s:
+                        # Single step
+                        self._stepping = True
+                        self._time_target = time
+                        if not self._pause_start:
+                            self._pause_start = time
+                            self._frame_start = self.frame()
+            if self._pause_start:
+                waiting = not self._stepping
+                self._time_target += POLL_SLOW_DEFAULT
+            else:
+                waiting = False
+                self._time_target += self._poll_fast
+        return True
+
+    def draw_run(self, display, fps=None, stepping=False):
+        # print("New game, head=%d [%d, %d]" % self.head())
+        # print(self.view_string())
+
+        x, y = self.run_start(display, fps=fps, stepping=stepping)
         while True:
-            collided = is_collision.nonzero()[0]
-            # print("Collided", collided)
-            if collided.size:
-                if self._score_max < 0:
-                    self._score_max = 0
-                    self._moves_max = 0
-                else:
-                    score_max = np.amax(self._body_length[collided])
-                    if score_max > self._score_max:
-                        self._score_max = score_max
-                    moves_max = self._cur_move - np.amin(self._nr_moves[collided])
-                    if moves_max > self._moves_max:
-                        self._moves_max = moves_max
-                    self._nr_games[collided] += 1
-
-                self._field[collided, self._view_y:self._view_y+self.HEIGHT, self._view_x:self._view_x+self.WIDTH] = 0
-                # We are currently doing setup, so this move doesn't count
-                self._nr_moves[collided] = self._cur_move + 1
-                self._body_length[collided]  = 0
-                self.draw_collisions(collided, x, y)
-                rand_x = self.rand_x(collided.size)
-                rand_y = self.rand_y(collided.size)
-                x[collided] = rand_x
-                y[collided] = rand_y
-
-            eat = (x == self._apple_x) & (y == self._apple_y)
-            tail_pos_x, tail_pos_y = self.tail_set(eat)
-            self._body_length += eat
-            if collided.size:
-                eat[collided] = True
-
-            # cur_move must be updated before head_set for head progress
-            # Also before draw_pre_move so nr moves will be correct
-            self._cur_move += 1
-            self.draw_pre_move(is_collision, eat, tail_pos_x, tail_pos_y)
-            self.head_set(x, y)
-            self.draw_heads()
-
-            eaten = eat.nonzero()[0]
-            if eaten.size:
-                self.new_apples(eaten)
-                self.draw_apples()
-
-            # print(self.view_string())
-
-            # print("Field\n", self._field)
-            #print("body_x", self._snake_body_x)
-            #print("body_y", self._snake_body_y)
-            # print("body")
-            # print(np.dstack((self._snake_body_x, self._snake_body_y)))
-            # print("Head")
-            # print(np.dstack((self.head_x(), self.head_y())))
-            # print("Apple")
-            # print(np.dstack((self._apple_x, self._apple_y)))
-            # print("-------------------")
-
-            self.update()
-            waiting = True
-            while waiting:
-                if stepping:
-                    stepping = False
-                elif time_step:
-                    left = int((time_target - timeit.default_timer())*1000)
-                    if left > 0:
-                        pygame.time.wait(left)
-                for event in pygame.event.get():
-                    if event.type == QUIT or event.type == KEYDOWN and event.key == K_q:
-                        self._time_end  = timeit.default_timer()
-                        if pause_start:
-                            self._paused += self._time_end - pause_start
-                            self._frames_skipped += self.frame() - frame_start
-
-                        score_max = np.amax(self._body_length)
-                        if score_max > self._score_max:
-                            self._score_max = score_max
-                        moves_max = self._cur_move - np.amin(self._nr_moves)
-                        if moves_max > self._moves_max:
-                            self._moves_max = moves_max
-                        self._nr_games_max = np.amax(self._nr_games)
-
-                        #print("Quit at", self._time_end - self._time_start,
-                        #      "Paused", self.paused(),
-                        #      "frame", self.frame(),
-                        #      "Skipped", self.frames_skipped())
-                        return False
-                    elif event.type == KEYDOWN:
-                        # events seem to come without time
-                        time = timeit.default_timer()
-                        if event.key == K_SPACE or event.key == K_r:
-                            # Stop/start running
-                            time_target = time
-                            if pause_start:
-                                self._paused += time - pause_start
-                                self._frames_skipped += self.frame() - frame_start
-                                # print("Start running at", time - self._time_start, "frame", self.frame())
-                                time_step = 1/fps if fps > 0 else 0
-                                pause_start = 0
-                            else:
-                                # print("Stop running at", time-self._time_start, "frame", self.frame())
-                                pause_start = time
-                                frame_start = self.frame()
-                                time_step = POLL_DEFAULT
-                        elif event.key == K_s:
-                            # Single step
-                            stepping = True
-                            time_target = time
-                            if not pause_start:
-                                pause_start = time
-                                frame_start = self.frame()
-                                time_step = POLL_DEFAULT
-                waiting = pause_start and not stepping
-                time_target += time_step
-
-            x, y = self.plan_greedy()
-            collided = self._field[self._all_snakes, y, x].nonzero()[0]
-            # print("Greedy Collided", collided)
-            if collided.size:
-                rand_x, rand_y = self.plan_random(collided)
-                x[collided] = rand_x
-                y[collided] = rand_y
-            # print("Move")
-            # print(np.dstack((x, y)))
-
-            is_collision = self._field[self._all_snakes, y, x]
+            is_collision, collided = self.move_collisions(display, x, y)
+            self.move_execute(display, x, y, is_collision, collided)
+            if not self.move_evaluate(display):
+                self.run_finish()
+                return
+            x, y = self.move_select()
 
 
 # +
@@ -661,11 +816,15 @@ block_size = int(arguments["--block"])
 snakes = Snakes(nr_snakes=nr_snakes,
                 width=int(arguments["--width"]),
                 height=int(arguments["--height"]))
-snakes.display_start(columns=columns, rows=rows, block_size = block_size)
 
-while snakes.draw_run(fps=float(arguments["--fps"]), stepping=arguments["--stepping"]):
-    pass
+with Display(snakes,
+             columns=columns,
+             rows=rows,
+             block_size = block_size) as display:
+    while snakes.draw_run(display,
+                          fps=float(arguments["--fps"]),
+                          stepping=arguments["--stepping"]):
+        pass
 print("Framerate", snakes.frame_rate())
 print("Max: Score:", snakes.score_max(), "Moves:", snakes.nr_moves_max(), "Lost Games:", snakes.nr_games_max())
-
-snakes.display_stop()
+# -
