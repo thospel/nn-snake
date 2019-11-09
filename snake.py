@@ -129,12 +129,23 @@ class TextRows(_TextRows):
 
 
 # +
-ROW_TOP = [TextField("score", "Score: ", 4),
-           TextField("game",  "Game: ",  4),
-           TextField("moves", "Moves: ", 6),
-           TextField("snake", "Id: ",    2),
-           # TextField("x",     "x: ",     2),
-           # TextField("y",     "y: ",     2),
+ROW_TOP = [
+    TextField("score", "Score:", 5),
+    TextField("game",  "Game:",  5),
+    TextField("moves", "Moves:", 7),
+    TextField("snake", "Id:",    3),
+    # TextField("x",     "x:",     3),
+    # TextField("y",     "y:",     3),
+]
+
+ROW_BOTTOM = [
+    TextField("step",        "Step:", 7),
+    TextField("score_max",   "Max Score:", 5),
+    TextField("moves_max",   "Max Moves:", 7),
+    TextField("game_max",    "Max Game:",  5),
+    TextField("time",        "Time:", 7),
+    # Put games last. If you have a lot of snakes this can go up very fast
+    TextField("games",       "Games:",  7),
 ]
 
 # This must be signed because window offsets can be negative
@@ -151,12 +162,13 @@ class Display:
     BLOCK_DEFAULT=20
     EDGE=1
 
-    # we test these at the start of some functions
-    # Make sure they have a "nothing to see here" value in case __init__ fails
-    screen = None
-    updates = []
     _updates_count = 0
     _updates_time  = 0
+
+    # we test these at the start of some functions
+    # Make sure they have a "nothing to see here" value in case __init__ fails
+    _screen = None
+    _updates = []
 
     # You can only have one pygame instance in one process,
     # so make display related variables into class variables
@@ -176,6 +188,11 @@ class Display:
         self.TOP_TEXT_X  = self.BLOCK
         self.TOP_TEXT_Y  = self.DRAW_BLOCK
 
+        # coordinates relative to the bottom left corner of the screen
+        self.BOTTOM_TEXT_X  = self.BLOCK
+        self.BOTTOM_TEXT_Y  = self.DRAW_BLOCK - self.BLOCK
+        # self.BOTTOM_TEXT_Y  = -Display.EDGE
+
         self.WINDOW_X = (snakes.WIDTH +2) * self.BLOCK
         self.WINDOW_Y = (snakes.HEIGHT+2) * self.BLOCK
         self.OFFSET_X = (1-snakes.VIEW_X) * self.BLOCK
@@ -186,12 +203,22 @@ class Display:
         # print("window_x", self._window_x)
         # print("window_y", self._window_y)
 
+        # Fixup for window offset
+        self.TOP_WIDTH = self.WINDOW_X-self.TOP_TEXT_X
+        self.TOP_TEXT_X -= self.OFFSET_X
+        self.TOP_TEXT_Y -= self.OFFSET_Y
+        self.BOTTOM_WIDTH = self.WINDOW_X * columns -self.BOTTOM_TEXT_X
+        self.BOTTOM_TEXT_X -= self.OFFSET_X
+        self.BOTTOM_TEXT_Y -= self.OFFSET_Y
+        self.BOTTOM_TEXT_Y += rows * self.WINDOW_Y
+
         # self.last_collision_x = np.zeros(self.windows, dtype=TYPE_PIXELS)
         # self.last_collision_y = np.zeros(self.windows, dtype=TYPE_PIXELS)
 
     def start(self):
         if not self.windows:
             return
+
         # Avoid pygame.init() since the init of the mixer component leads to 100% CPU
         pygame.display.init()
         pygame.display.set_caption(self.caption)
@@ -203,20 +230,30 @@ class Display:
         self._font.origin = True
 
         self._textrows = TextRows(font=self._font)
-        self._textrows.add(TextRow(self.TOP_TEXT_X - self.OFFSET_X,
-                                   self.TOP_TEXT_Y - self.OFFSET_Y,
-                                   self.WINDOW_X, ROW_TOP), self.windows)
+        self._textrows.add(TextRow(self.TOP_TEXT_X,
+                                   self.TOP_TEXT_Y,
+                                   self.TOP_WIDTH, ROW_TOP), self.windows)
 
-        Display.screen = pygame.display.set_mode((self.WINDOW_X * columns, self.WINDOW_Y * rows))
+        self._textrows.add(TextRow(self.BOTTOM_TEXT_X,
+                                   self.BOTTOM_TEXT_Y,
+                                   self.BOTTOM_WIDTH, ROW_BOTTOM))
+
+        Display._screen = pygame.display.set_mode((self.WINDOW_X * columns, self.WINDOW_Y * rows))
         rect = 0, 0, self.WINDOW_X * columns, self.WINDOW_Y * rows
-        rect = pygame.draw.rect(Display.screen, Display.WALL, rect)
+        rect = pygame.draw.rect(Display._screen, Display.WALL, rect)
+        self.draw_text(0, "step")
+        self.draw_text(0, "time")
+        self.draw_text(0, "score_max")
+        self.draw_text(0, "moves_max")
+        self.draw_text(0, "game_max")
+        self.draw_text(0, "games")
         Display._updates = [rect]
 
     def stop(self):
-        if not Display.screen:
+        if not Display._screen:
             return
 
-        Display.screen  = None
+        Display._screen  = None
         Display._updates = []
         pygame.quit()
         if self._slow_updates:
@@ -264,7 +301,7 @@ class Display:
             # Erase old text
             old_rect = text_data.old_rect[w]
             if old_rect:
-                pygame.draw.rect(Display.screen, bg_color, old_rect)
+                pygame.draw.rect(Display._screen, bg_color, old_rect)
             text = text_data.format % value
             x = text_data.format_x
         y = text_data.y
@@ -282,7 +319,7 @@ class Display:
         rect.x += self._window_x[w]
         rect.y = y - rect.y
         # print("Draw text", w, x, y, '"%s"' % text, x + self._window_x[w], y + self._window_y[w], rect, old_rect)
-        self._font.render_to(Display.screen, (x, y), None, fg_color, bg_color)
+        self._font.render_to(Display._screen, (x, y), None, fg_color, bg_color)
         if value is None:
             Display._updates.append(rect)
         else:
@@ -298,7 +335,7 @@ class Display:
                 self._window_y[w] - self.OFFSET_Y + self.BLOCK,
                 self.WINDOW_X - 2 * self.BLOCK,
                 self.WINDOW_Y - 2 * self.BLOCK)
-        rect = pygame.draw.rect(Display.screen, Display.BACKGROUND, rect)
+        rect = pygame.draw.rect(Display._screen, Display.BACKGROUND, rect)
         Display._updates.append(rect)
 
     def draw_block(self, w, x, y, color, update=True):
@@ -308,7 +345,7 @@ class Display:
                 self.DRAW_BLOCK)
 
         # print("Draw %d (%d,%d): %d,%d,%d: [%d %d %d %d]" % ((w, x, y)+color+(rect)))
-        rect = pygame.draw.rect(Display.screen, color, rect)
+        rect = pygame.draw.rect(Display._screen, color, rect)
         if update:
             Display._updates.append(rect)
         return rect
@@ -401,8 +438,8 @@ TYPE_SCORE = np.uint32
 TYPE_MOVES = np.uint32
 TYPE_GAMES = np.uint32
 
-VIEW_X0 = 2
-VIEW_Y0 = 2
+VIEW_X0 = 1
+VIEW_Y0 = 1
 VIEW_X2 = VIEW_X0+2
 VIEW_Y2 = VIEW_Y0+2
 VIEW_WIDTH  = 2*VIEW_X0+1
@@ -495,6 +532,9 @@ class Snakes:
 
     def nr_games_max(self):
         return self._nr_games_max
+
+    def nr_games_total(self):
+        return self._nr_games_total
 
     def head_x(self):
         return self._head_x
@@ -647,17 +687,25 @@ class Snakes:
             if self._score_max < 0:
                 self._score_max = 0
                 self._moves_max = 0
+                display.draw_text(0, "score_max", self.score_max())
+                display.draw_text(0, "moves_max", self.nr_moves_max())
+                display.draw_text(0, "game_max", self.nr_games_max())
             else:
                 self._nr_games[collided] += 1
+                self._nr_games_total += collided.size
                 nr_games_max = np.amax(self._nr_games[collided])
                 if nr_games_max > self._nr_games_max:
                     self._nr_games_max = nr_games_max
+                    display.draw_text(0, "game_max", self.nr_games_max())
                 score_max = np.amax(self._body_length[collided])
                 if score_max > self._score_max:
                     self._score_max = score_max
+                    display.draw_text(0, "score_max", self.score_max())
                 moves_max = self._cur_move - np.amin(self._nr_moves[collided])
                 if moves_max > self._moves_max:
                     self._moves_max = moves_max
+                    display.draw_text(0, "moves_max", self.nr_moves_max())
+            display.draw_text(0, "games", self.nr_games_total())
 
             # After the test because it skips the first _nr_games update
             w_index = is_collision[self._all_windows].nonzero()[0]
@@ -723,6 +771,12 @@ class Snakes:
         return x, y
 
     def move_evaluate(self, display):
+        display.draw_text(0, "step", self.frame())
+        elapsed = timeit.default_timer() - self._time_start;
+        time = int(elapsed+0.5)
+        if time != self._time_last:
+            display.draw_text(0, "time", time)
+            self._time_last = time
         display.update()
         return self.wait(display)
 
@@ -746,11 +800,13 @@ class Snakes:
             self._poll_fast = 0
         self._nr_games.fill(0)
         self._nr_games_max = 0
+        self._nr_games_total = 0
         self._score_max = -1
         self._moves_max = -1
         self._cur_move = Snakes.START_MOVE-1
         self._stepping = stepping
         self._paused = 0
+        self._time_last = ""
         # print("Start at time 0, frame", self.frame())
         self._time_start  = timeit.default_timer()
         self._time_target = self._time_start
@@ -861,6 +917,11 @@ with Display(snakes,
                           fps=float(arguments["--fps"]),
                           stepping=arguments["--stepping"]):
         pass
-print("Framerate", snakes.frame_rate())
-print("Max: Score:", snakes.score_max(), "Moves:", snakes.nr_moves_max(), "Lost Games:", snakes.nr_games_max())
+
+print("Elapsed %.3f s, Frames: %d, Frame Rate %.3f" %
+      (snakes.elapsed(), snakes.frame(), snakes.frame_rate()))
+print("Max Score: %d, Max Moves: %d" %
+      (snakes.score_max(), snakes.nr_moves_max()))
+print("Total Lost Games: %d, Lost Game Max: %d" %
+      (snakes.nr_games_total(), snakes.nr_games_max()))
 # -
