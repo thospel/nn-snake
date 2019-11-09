@@ -1,0 +1,12 @@
+name: snake
+channels:
+  - defaults
+dependencies:
+  - tensorflow-gpu
+  - pip
+  - docopt
+  - matplotlib
+  - tensorboard
+  - pip:
+    - pygame
+# prefix: /home/ton/miniconda3/envs/snake
