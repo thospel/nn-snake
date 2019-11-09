@@ -155,15 +155,19 @@ class Display:
     # Make sure they have a "nothing to see here" value in case __init__ fails
     screen = None
     updates = []
+    _updates_count = 0
+    _updates_time  = 0
 
     # You can only have one pygame instance in one process,
     # so make display related variables into class variables
-    def __init__(self, snakes, columns=0, rows=1, block_size=0, caption="Snakes"):
+    def __init__(self, snakes, columns=0, rows=1, block_size=0,
+                 caption="Snakes", slow_updates=0):
         self.windows = rows*columns
         if not self.windows:
             return
 
         self.caption = caption
+        self._slow_updates = slow_updates
 
         self.BLOCK = block_size or Display.BLOCK_DEFAULT
         self.DRAW_BLOCK = self.BLOCK-2*Display.EDGE
@@ -205,16 +209,22 @@ class Display:
 
         Display.screen = pygame.display.set_mode((self.WINDOW_X * columns, self.WINDOW_Y * rows))
         rect = 0, 0, self.WINDOW_X * columns, self.WINDOW_Y * rows
-        Display.updates = [rect]
-        pygame.draw.rect(Display.screen, Display.WALL, rect)
+        rect = pygame.draw.rect(Display.screen, Display.WALL, rect)
+        Display._updates = [rect]
 
     def stop(self):
         if not Display.screen:
             return
 
         Display.screen  = None
-        Display.updates = []
+        Display._updates = []
         pygame.quit()
+        if self._slow_updates:
+            if Display._updates_count:
+                print("Average disply update time: %.6f" %
+                      (Display._updates_time / Display._updates_count))
+            else:
+                print("No display updates")
 
     def __enter__(self):
         self.start()
@@ -227,26 +237,35 @@ class Display:
         self.stop()
 
     def update(self):
-        if Display.updates:
-            self._time_start  = timeit.default_timer()
-            pygame.display.update(Display.updates)
-            # print("Update took", int((timeit.default_timer() - self._time_start)*1000), "updates\n", Display.updates)
-            Display.updates = []
+        if Display._updates:
+            if self._slow_updates:
+                self._time_start  = timeit.default_timer()
+                pygame.display.update(Display._updates)
+                period = timeit.default_timer() - self._time_start
+                if period > self._slow_updates:
+                    print("Update took %.4f" % period)
+                    for rect in Display._updates:
+                        print("    ", rect)
+                Display._updates_count +=1
+                Display._updates_time  += period
+            else:
+                pygame.display.update(Display._updates)
+            Display._updates = []
 
     def draw_text(self, w, name, value=None,
                        fg_color=BACKGROUND, bg_color=WALL):
         text_data = self._textrows.lookup(name)
 
         if value is None:
+            old_rect = None
             text = text_data.prefix
             x = text_data.prefix_x
         else:
-            text = text_data.format % value
             # Erase old text
             old_rect = text_data.old_rect[w]
             if old_rect:
                 pygame.draw.rect(Display.screen, bg_color, old_rect)
-                Display.updates.append(old_rect)
+            text = text_data.format % value
             x = text_data.format_x
         y = text_data.y
 
@@ -254,6 +273,9 @@ class Display:
         rect = self._font.get_rect(text)
         rect.x += x
         if rect.x + rect.width > text_data.max_width:
+            if value is not None and old_rect is not None:
+                Display._updates.append(old_rect)
+                text_data.old_rect[w] = None
             return None
         x += self._window_x[w]
         y += self._window_y[w]
@@ -261,8 +283,13 @@ class Display:
         rect.y = y - rect.y
         # print("Draw text", w, x, y, '"%s"' % text, x + self._window_x[w], y + self._window_y[w], rect, old_rect)
         self._font.render_to(Display.screen, (x, y), None, fg_color, bg_color)
-        Display.updates.append(rect)
-        if value is not None:
+        if value is None:
+            Display._updates.append(rect)
+        else:
+            if old_rect is None:
+                Display._updates.append(rect)
+            else:
+                Display._updates.append(rect.union(old_rect))
             # Remember what we updated
             text_data.old_rect[w] = rect
 
@@ -271,18 +298,20 @@ class Display:
                 self._window_y[w] - self.OFFSET_Y + self.BLOCK,
                 self.WINDOW_X - 2 * self.BLOCK,
                 self.WINDOW_Y - 2 * self.BLOCK)
-        pygame.draw.rect(Display.screen, Display.BACKGROUND, rect)
-        Display.updates.append(rect)
+        rect = pygame.draw.rect(Display.screen, Display.BACKGROUND, rect)
+        Display._updates.append(rect)
 
-    def draw_block(self, w, x, y, color):
+    def draw_block(self, w, x, y, color, update=True):
         rect = (x * self.BLOCK + self._window_x[w] + Display.EDGE,
                 y * self.BLOCK + self._window_y[w] + Display.EDGE,
                 self.DRAW_BLOCK,
                 self.DRAW_BLOCK)
 
         # print("Draw %d (%d,%d): %d,%d,%d: [%d %d %d %d]" % ((w, x, y)+color+(rect)))
-        Display.updates.append(rect)
-        pygame.draw.rect(Display.screen, color, rect)
+        rect = pygame.draw.rect(Display.screen, color, rect)
+        if update:
+            Display._updates.append(rect)
+        return rect
 
     def draw_collisions(self, all_windows, w_index, x, y, nr_games):
         for w in w_index:
@@ -313,14 +342,20 @@ class Display:
                   w_nr_moves):
         for w in range(all_windows.size):
             i = all_windows[w]
-            if not is_collision[i]:
+            if is_collision[i]:
+                body_rect = None
+            else:
                 # The current head becomes body
                 # (For length 1 snakes the following tail erase will undo this)
-                self.draw_block(w, head_x_old[i], head_y_old[i], Display.BODY)
+                body_rect = self.draw_block(w, head_x_old[i], head_y_old[i], Display.BODY, update=False)
             if not eat[i]:
                 # Drop the tail if we didn't eat an apple then
                 self.draw_block(w, tail_x[i], tail_y[i], Display.BACKGROUND)
-            self.draw_block(w, head_x_new[i], head_y_new[i], Display.HEAD)
+            if body_rect:
+                head_rect = self.draw_block(w, head_x_new[i], head_y_new[i], Display.HEAD, update=False)
+                Display._updates.append(head_rect.union(body_rect))
+            else:
+                self.draw_block(w, head_x_new[i], head_y_new[i], Display.HEAD)
             self.draw_text(w, "moves", w_nr_moves[w])
             # self.draw_text(w, "x", head_x_new[i])
             # self.draw_text(w, "y", head_y_new[i])
@@ -820,7 +855,8 @@ snakes = Snakes(nr_snakes=nr_snakes,
 with Display(snakes,
              columns=columns,
              rows=rows,
-             block_size = block_size) as display:
+             block_size = block_size,
+             slow_updates=0) as display:
     while snakes.draw_run(display,
                           fps=float(arguments["--fps"]),
                           stepping=arguments["--stepping"]):
