@@ -26,19 +26,30 @@ Usage:
 Options:
   -h --help             Show this screen
   --version             Show version
-  --stepping            Don't start running immediately, wait for the user to press ENTER
+  --stepping            Start in paused mode, wait for the user to press SPACE
   --fps=<fps>           Frames per second (0 is no delays) [default: 40]
   --snakes=<snakes>     How many snakes to run at the same time [default: 0]
                         0 means use rows * colums or 1
-  --width=<width>       Pit width [default: 40]
-  --height=<height>     Pit height [default: 40]
-  --columns=<columns>   Pit height [default: 2]
   --block=<block_size>  Block size in pixels [default: 20]
-  --rows=<rows>         Pit width [default: 1]
+  --width=<width>       Pit width  in blocks [default: 40]
+  --height=<height>     Pit height in blocks [default: 40]
+  --columns=<columns>   Columns of pits to display [default: 2]
+  --rows=<rows>         Rows of pits to display [default: 1]
   -f <file>:            Used by jupyter, ignored
+
+Display key actions:
+  s:          enter pause mode after doing a single step
+  r, SPACE:   toggle run/pause mode
+  q, <close>: quit
+  +:          More frames per second (wait time /= 2)
+  -:          Less frames per second (wait time *= 2)
+  =:          Go back to the original frames per second
 
 """
 from docopt import docopt
+
+DEFAULTS = docopt(__doc__, [])
+# print(DEFAULTS)
 
 if __name__ == '__main__':
     arguments = docopt(__doc__, version='Snake 1.0')
@@ -53,7 +64,7 @@ from typing import List
 import random
 import math
 import itertools
-import timeit
+import time
 import numpy as np
 
 import os
@@ -152,6 +163,9 @@ ROW_BOTTOM = [
 TYPE_PIXELS = np.int32
 
 class Display:
+    KEY_INTERVAL = int(1000 / 20)  # twenty per second
+    KEY_DELAY = 500                # Start repeating after half a second
+
     WALL  = 255,255,255
     BODY  = 160,160,160
     HEAD  = 200,200,0
@@ -159,7 +173,6 @@ class Display:
     APPLE = 0,255,0
     COLLISION = 255,0,0
 
-    BLOCK_DEFAULT=20
     EDGE=1
 
     _updates_count = 0
@@ -172,7 +185,10 @@ class Display:
 
     # You can only have one pygame instance in one process,
     # so make display related variables into class variables
-    def __init__(self, snakes, columns=0, rows=1, block_size=0,
+    def __init__(self, snakes,
+                 columns    = DEFAULTS["--columns"],
+                 rows       = DEFAULTS["--rows"],
+                 block_size = DEFAULTS["--block"],
                  caption="Snakes", slow_updates=0):
         self.windows = rows*columns
         if not self.windows:
@@ -181,7 +197,7 @@ class Display:
         self.caption = caption
         self._slow_updates = slow_updates
 
-        self.BLOCK = block_size or Display.BLOCK_DEFAULT
+        self.BLOCK = block_size
         self.DRAW_BLOCK = self.BLOCK-2*Display.EDGE
 
         # coordinates relative to the upper left corner of the window
@@ -223,7 +239,7 @@ class Display:
         pygame.display.init()
         pygame.display.set_caption(self.caption)
         # pygame.mouse.set_visible(1)
-        pygame.key.set_repeat(KEY_DELAY, KEY_INTERVAL)
+        pygame.key.set_repeat(Display.KEY_DELAY, Display.KEY_INTERVAL)
 
         pygame.freetype.init()
         self._font = pygame.freetype.Font(None, self.BLOCK)
@@ -276,9 +292,9 @@ class Display:
     def update(self):
         if Display._updates:
             if self._slow_updates:
-                self._time_start  = timeit.default_timer()
+                self._time_start  = time.monotonic()
                 pygame.display.update(Display._updates)
-                period = timeit.default_timer() - self._time_start
+                period = time.monotonic() - self._time_start
                 if period > self._slow_updates:
                     print("Update took %.4f" % period)
                     for rect in Display._updates:
@@ -288,6 +304,19 @@ class Display:
             else:
                 pygame.display.update(Display._updates)
             Display._updates = []
+
+    def events_get(self, to_sleep):
+        if to_sleep > 0:
+            time.sleep(to_sleep)
+        keys = []
+        events = pygame.event.get()
+        if events:
+            for event in events:
+                if event.type == QUIT:
+                    keys.append("q")
+                elif event.type == KEYDOWN:
+                    keys.append(event.unicode)
+        return keys
 
     def draw_text(self, w, name, value=None,
                        fg_color=BACKGROUND, bg_color=WALL):
@@ -413,23 +442,8 @@ def np_empty(shape, type):
 
 
 # +
-TEXT_SCORE   = "Score: "
-TEXT_SCORE_X = 1
-TEXT_GAME    = "Game: "
-TEXT_GAME_X  = 7
-TEXT_MOVE    = "Move: "
-TEXT_MOVE_X  = 13
-TEXT_SNAKE   = "Snake: "
-TEXT_SNAKE_X = 20
 
-POLL_SLOW_DEFAULT = 1/25
-POLL_FAST_DEFAULT = 1/40
-KEY_INTERVAL = int(1000 / 20)  # twenty per second
-KEY_DELAY = 500           # Start repeating after half a second
-
-WIDTH_DEFAULT  = 40
-HEIGHT_DEFAULT = 40
-E_POS = np.uint8
+# TYPE_POS = np.uint8
 TYPE_POS   = np.int8
 TYPE_BOOL  = np.bool
 TYPE_INDEX = np.intp
@@ -445,21 +459,28 @@ VIEW_Y2 = VIEW_Y0+2
 VIEW_WIDTH  = 2*VIEW_X0+1
 VIEW_HEIGHT = 2*VIEW_Y0+1
 
-INDEX_SNAKE = 0
-INDEX_APPLE = 1
-INDEX_WALL  = 2
-INDEX_MAX   = 3
-
 class Snakes:
+    # Event polling time in paused mode.
+    # Avoid too much CPU waste or even a busy loop in case fps == 0
+    POLL_SLOW = 1/25
+    POLL_MAX = POLL_SLOW * 1.5
+    WAIT_MIN = 1/1000
+
+    # Position of the first head of a game in the body array
+    # The position before that will be used for one dummy tail set
     START_MOVE = 1
 
+    # Possible directions for a random walk
     DIRECTIONS = [[1,0],[-1,0],[0,1],[0,-1]]
     DIRECTION_PERMUTATIONS = np.array(list(itertools.permutations(DIRECTIONS)), dtype=TYPE_POS)
     NR_DIRECTION_PERMUTATIONS = len(DIRECTION_PERMUTATIONS)
     DIRECTION_PERMUTATIONS_X=DIRECTION_PERMUTATIONS[:,:,0]
     DIRECTION_PERMUTATIONS_Y=DIRECTION_PERMUTATIONS[:,:,1]
 
-    def __init__(self, nr_snakes=1, width=0, height=0, view_x=0, view_y=0):
+    def __init__(self, nr_snakes=1,
+                 width  = DEFAULTS["--width"],
+                 height = DEFAULTS["--height"],
+                 view_x=0, view_y=0):
         self.windows = None
 
         self._nr_snakes = nr_snakes
@@ -467,17 +488,24 @@ class Snakes:
 
         self.VIEW_X = view_x or VIEW_X0
         self.VIEW_Y = view_y or VIEW_Y0
-        self.WIDTH  = width  or WIDTH_DEFAULT
-        self.HEIGHT = height or HEIGHT_DEFAULT
+        self.WIDTH  = width
+        self.HEIGHT = height
         self.AREA   = self.WIDTH * self.HEIGHT
         # First power of 2 greater or equal to AREA for fast modular arithmetic
         self.AREA2 = 1 << (self.AREA-1).bit_length()
         self.MASK  = self.AREA2 - 1
 
+        width1  = self.HEIGHT+2*self.VIEW_Y
+        height1 = self.WIDTH +2*self.VIEW_X
+        # Pit is just the edges
+        self._empty_pit = np.ones((width1, height1), dtype=TYPE_FLAG)
+        self._empty_pit[self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH] = 0
+        # self._field = np.ones((nr_snakes, width1, height1), dtype=TYPE_FLAG)
+
+        # The playing field starts out as nr_snakes copies of the empty pit
         # Notice that we store in row major order, so use field[y,x]
-        self._field = np.ones((nr_snakes,
-                               self.HEIGHT+2*self.VIEW_Y,
-                               self.WIDTH +2*self.VIEW_X), dtype=TYPE_FLAG)
+        self._field = self._empty_pit.reshape(1,width1,height1).repeat(nr_snakes, axis=0)
+
         # Position arrays are split in x and y so we can do fast _field indexing
         self._snake_body_x = np_empty((nr_snakes, self.AREA2), TYPE_POS)
         self._snake_body_y = np_empty((nr_snakes, self.AREA2), TYPE_POS)
@@ -596,6 +624,7 @@ class Snakes:
         return self._field[:,x-VIEW_X0:x+VIEW_X2,y-VIEW_Y0:y+VIEW_Y2]
     """
 
+    # Sprinkle new apples in all pits where the snake ate them (todo)
     def new_apples(self, todo):
         too_large = self._body_length[todo] >= self.AREA-1
         if too_large.any():
@@ -612,9 +641,7 @@ class Snakes:
             todo = todo[fail != 0]
             # print("todo", todo)
 
-    def draw_heads(self):
-        self.draw_blocks(self.head_x(), self.head_y(), Display.HEAD)
-
+    # Plot the shortest course to the apple completely ignoring any snake body
     def plan_greedy(self):
         x = self.head_x()
         y = self.head_y()
@@ -633,30 +660,46 @@ class Snakes:
             raise(AssertionError("Impossible apple direction"))
         return x+dx, y+dy
 
+    # Pick a random direction that isn't blocked
+    # Or just a random direction if all are blocked
+    # But only for snakes with an index in collided
     def plan_random(self, collided):
         # different permutation for each collision
         direction_index = np.random.randint(Snakes.NR_DIRECTION_PERMUTATIONS,
                                             size=collided.size)
+
+        # Currently we randomly generate the whole set of directions from
+        # which we will pick first that is not blocked
+        # That is a complete waste of work for later directions
+        # So instead we could do a loop over the 4 directions further
+        # restricting collided each time. That may well be faster
+        # (and avoids the awkward transpose)
+
         # different permutation of directions for each collision
         dx = Snakes.DIRECTION_PERMUTATIONS_X[direction_index].transpose()
         dy = Snakes.DIRECTION_PERMUTATIONS_Y[direction_index].transpose()
+
         # different permutation of test coordinates for each collision
         x = self.head_x()[collided] + dx
         y = self.head_y()[collided] + dy
+
         # Is there nothing on the new coordinate ?
         empty = self._field[collided, y, x] ^ 1
         # which permutation (select) for which snake(i) is empty
         select, i = empty.nonzero()
+
         # Fill result with a random direction for each snake
         # (fallback for if the head is completely surrounded)
         pos_x = x[0].copy()
         pos_y = y[0].copy()
+
         # Copy coordinates of empty neighbours
         # Each snake can get coordinates assigned multiple times
         # I assume some assignment wins and there is no tearing
         # (I do not know if numpy enforces anything like this)
         pos_x[i] = x[select, i]
         pos_y[i] = y[select, i]
+
         return pos_x, pos_y
 
     def frame(self):
@@ -665,9 +708,14 @@ class Snakes:
     def elapsed(self):
         return self._time_end - self._time_start
 
+    def elapsed_process(self):
+        return self._time_process_end - self._time_process_start
+
+    # How long we didn't run
     def paused(self):
         return self._paused
 
+    # How many frames we manually single-stepped
     def frames_skipped(self):
         return self._frames_skipped
 
@@ -679,18 +727,21 @@ class Snakes:
             return math.inf * frames
         return frames / elapsed
 
+    # In all pits where the snake lost we need to restart the game
     def move_collisions(self, display, x, y):
         is_collision = self._field[self._all_snakes, y, x]
         collided = is_collision.nonzero()[0]
         # print("Collided", collided)
         if collided.size:
             if self._score_max < 0:
+                # This is the very first call. All pits need to be emptied
                 self._score_max = 0
                 self._moves_max = 0
                 display.draw_text(0, "score_max", self.score_max())
                 display.draw_text(0, "moves_max", self.nr_moves_max())
                 display.draw_text(0, "game_max", self.nr_games_max())
             else:
+                # Normal handling.
                 self._nr_games[collided] += 1
                 self._nr_games_total += collided.size
                 nr_games_max = np.amax(self._nr_games[collided])
@@ -770,17 +821,23 @@ class Snakes:
         # print(np.dstack((x, y)))
         return x, y
 
-    def move_evaluate(self, display):
+    # Do whatever needs to be done after moving the snake
+    # In this case we dislay the current state and wait for a bit
+    # while handling events
+    def move_finish(self, display):
         display.draw_text(0, "step", self.frame())
-        elapsed = timeit.default_timer() - self._time_start;
-        time = int(elapsed+0.5)
-        if time != self._time_last:
-            display.draw_text(0, "time", time)
-            self._time_last = time
+        elapsed = time.monotonic() - self._time_start;
+        elapsed = int(elapsed+0.5)
+        if elapsed != self._time_last:
+            display.draw_text(0, "time", elapsed)
+            self._time_last = elapsed
         display.update()
         return self.wait(display)
 
-    def run_start(self, display, fps=None, stepping=False):
+    # Setup initial variables for moving snakes
+    def run_start(self, display,
+                  fps      = DEFAULTS["--fps"],
+                  stepping = DEFAULTS["--stepping"]):
         nr_windows = min(self._nr_snakes, display.windows)
         self._all_windows = np.arange(nr_windows-1, -1, -1, dtype=TYPE_INDEX)
 
@@ -789,15 +846,20 @@ class Snakes:
         y = np.zeros(self._nr_snakes, TYPE_POS)
 
         # Make sure we won't hit an apple left from a previous run
+        # During collision handling all the x and y given above will get a
+        # random position inside the pit (x, y >= 1), so they are guaranteed
+        # not to hit an apple at (0,0)
         self._apple_x.fill(0)
         self._apple_y.fill(0)
 
-        if fps is None:
-            self._poll_fast = POLL_FAST_DEFAULT
-        elif fps > 0:
+        if fps > 0:
             self._poll_fast = 1 / fps
-        else:
+        elif fps == 0:
             self._poll_fast = 0
+        else:
+            raise(RuntimeError("fps must not be negative"))
+        self._poll_fast0 = self._poll_fast
+
         self._nr_games.fill(0)
         self._nr_games_max = 0
         self._nr_games_total = 0
@@ -808,18 +870,20 @@ class Snakes:
         self._paused = 0
         self._time_last = ""
         # print("Start at time 0, frame", self.frame())
-        self._time_start  = timeit.default_timer()
+        self._time_process_start = time.process_time()
+        self._time_start  = time.monotonic()
         self._time_target = self._time_start
         if self._stepping:
-            self._pause_start = self._time_start
-            self._frame_start = self.frame()
+            self._pause_time = self._time_start
+            self._pause_frame = self.frame()
             # When stepping the first frame doesn't count
             self._frames_skipped = -1
         else:
-            self._pause_start = 0
+            self._pause_time = 0
             self._frames_skipped = 0
         return x, y
 
+    # We are done moving snake. Report some statistics and cleanup
     def run_finish(self):
         score_max = np.amax(self._body_length)
         if score_max > self._score_max:
@@ -837,51 +901,78 @@ class Snakes:
         #      "frame", self.frame(),
         #      "Skipped", self.frames_skipped())
 
+    # Wait for timeout/events
     def wait(self, display):
-        waiting = True
-        while waiting:
+        # print("Wait", self._time_target)
+        while True:
+            now = time.monotonic()
             if self._stepping:
                 self._stepping = False
-            elif self._pause_start or self._poll_fast:
-                left = int((self._time_target - timeit.default_timer())*1000)
-                if left > 0:
-                    pygame.time.wait(left)
-            for event in pygame.event.get():
-                if event.type == QUIT or event.type == KEYDOWN and event.key == K_q:
-                    self._time_end  = timeit.default_timer()
-                    if self._pause_start:
-                        self._paused += self._time_end - self._pause_start
-                        self._frames_skipped += self.frame() - self._frame_start
+                to_sleep = 0
+            else:
+                to_sleep = self._time_target - now
+                # print("To_Sleep", to_sleep)
+                if to_sleep > 0:
+                    # Don't become unresponsive
+                    if to_sleep > Snakes.POLL_MAX:
+                        to_sleep = Snakes.POLL_SLOW
+                    if to_sleep < Snakes.WAIT_MIN:
+                        to_sleep = 0
+
+            events = display.events_get(to_sleep)
+            if to_sleep > 0:
+                now = time.monotonic()
+            # events seem to come without timestamp, so just assume "now"
+            for key in events:
+                if key == "q":
+                    self._time_process_end = time.process_time()
+                    self._time_end  = now
+                    if self._pause_time:
+                        self._paused += now - self._pause_time
+                        self._frames_skipped += self.frame() - self._pause_frame
 
                     return False
-                elif event.type == KEYDOWN:
-                    # events seem to come without time
-                    time = timeit.default_timer()
-                    if event.key == K_SPACE or event.key == K_r:
-                        # Stop/start running
-                        self._time_target = time
-                        if self._pause_start:
-                            self._paused += time - self._pause_start
-                            self._frames_skipped += self.frame() - self._frame_start
-                            # print("Start running at", time - self._time_start, "frame", self.frame())
-                            self._pause_start = 0
-                        else:
-                            # print("Stop running at", time-self._time_start, "frame", self.frame())
-                            self._pause_start = time
-                            self._frame_start = self.frame()
-                    elif event.key == K_s:
-                        # Single step
-                        self._stepping = True
-                        self._time_target = time
-                        if not self._pause_start:
-                            self._pause_start = time
-                            self._frame_start = self.frame()
-            if self._pause_start:
-                waiting = not self._stepping
-                self._time_target += POLL_SLOW_DEFAULT
-            else:
-                waiting = False
-                self._time_target += self._poll_fast
+                elif key == " " or key == "r":
+                    # Stop/start running
+                    if self._pause_time:
+                        self._time_target = now
+                        self._paused += now - self._pause_time
+                        self._frames_skipped += self.frame() - self._pause_frame
+                        # print("Start running at", now - self._time_start, "frame", self.frame())
+                        self._pause_time = 0
+                    else:
+                        # print("Stop running at", time-self._time_start, "frame", self.frame())
+                        self._pause_time = now
+                        self._pause_frame = self.frame()
+                elif key == "s":
+                    # Single step
+                    self._stepping = True
+                    if not self._pause_time:
+                        self._pause_time = now
+                        self._pause_frame = self.frame()
+                elif key == "+":
+                    self._time_target -= self._poll_fast
+                    self._poll_fast /= 2
+                    self._time_target = max(now, self._time_target + self._poll_fast)
+                elif key == "-":
+                    self._time_target -= self._poll_fast
+                    self._poll_fast *= 2
+                    self._time_target = max(now, self._time_target + self._poll_fast)
+                elif key == "=":
+                    self._time_target -= self._poll_fast
+                    self._poll_fast = self._poll_fast0
+                    self._time_target = max(now, self._time_target + self._poll_fast)
+            if self._pause_time:
+                if self._stepping:
+                    break
+                self._time_target = now + Snakes.POLL_SLOW
+            elif now >= self._time_target - Snakes.WAIT_MIN:
+                break
+        #print("elapsed=%.3f, target=%.3f, frame=%d" %
+        #      (time.monotonic()-self._time_start,
+        #       self._time_target-self._time_start,
+        #       self.frame()))
+        self._time_target += self._poll_fast
         return True
 
     def draw_run(self, display, fps=None, stepping=False):
@@ -892,7 +983,7 @@ class Snakes:
         while True:
             is_collision, collided = self.move_collisions(display, x, y)
             self.move_execute(display, x, y, is_collision, collided)
-            if not self.move_evaluate(display):
+            if not self.move_finish(display):
                 self.run_finish()
                 return
             x, y = self.move_select()
@@ -918,8 +1009,8 @@ with Display(snakes,
                           stepping=arguments["--stepping"]):
         pass
 
-print("Elapsed %.3f s, Frames: %d, Frame Rate %.3f" %
-      (snakes.elapsed(), snakes.frame(), snakes.frame_rate()))
+print("Elapsed %.3f s (%.3fs used), Frames: %d, Frame Rate %.3f" %
+      (snakes.elapsed(), snakes.elapsed_process(), snakes.frame(), snakes.frame_rate()))
 print("Max Score: %d, Max Moves: %d" %
       (snakes.score_max(), snakes.nr_moves_max()))
 print("Total Lost Games: %d, Lost Game Max: %d" %
