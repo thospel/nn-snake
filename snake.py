@@ -44,7 +44,7 @@ Display key actions:
   q, <close>: quit
   +:          More frames per second (wait time /= 2)
   -:          Less frames per second (wait time *= 2)
-  =:          Go back to the original frames per second
+  =:          Restore the original frames per second
 
 """
 from docopt import docopt
@@ -102,6 +102,7 @@ class TextData:
     format_x:   int
     format:     str
     max_width:  int
+    old_text:   str
     old_rect:   List[pygame.Rect]
 
 class TextRows(_TextRows):
@@ -113,11 +114,19 @@ class TextRows(_TextRows):
         # assume 8 is widest
         rect = self.font.get_rect("8")
         self.digit_width = rect.width
-        self._lookup = {}
+        self._lookup     = {}
+        self._lookup_row = {}
 
-    def add(self, text_row, windows=1):
+    def add(self, row_name, text_row, windows=1):
+        if row_name in self._lookup_row:
+            raise(AssertionError("Duplicate row name %s", row_name))
+        for text_field in text_row.text_fields:
+            if text_field.name in self._lookup:
+                raise(AssertionError("Duplicate field name %s", text_field.name))
+
         x = text_row.x
         y = text_row.y
+        row_data = []
         for text_field in text_row.text_fields:
             pos_prefix = x
             rect = self.font.get_rect(text_field.prefix)
@@ -125,20 +134,24 @@ class TextRows(_TextRows):
             pos_format = x
             x += self.digit_width * text_field.width + self.skip_width
 
-            if text_field.name in self._lookup:
-                raise(AssertionError("Duplicate name %s", text_field.name))
-            self._lookup[text_field.name] = TextData(
+            text_data = TextData(
                 y         = y,
                 prefix_x  = pos_prefix,
                 prefix    = text_field.prefix,
                 format_x  = pos_format,
                 format    = "%%%du" % text_field.width,
                 max_width = text_row.max_width,
+                old_text  = [None]*windows,
                 old_rect  = [None]*windows)
+            self._lookup[text_field.name] = text_data
+            row_data.append(text_data)
+        self._lookup_row[row_name] = row_data
 
     def lookup(self, name):
         return self._lookup[name]
 
+    def lookup_row(self, name):
+        return self._lookup_row[name]
 
 # +
 ROW_TOP = [
@@ -152,9 +165,13 @@ ROW_TOP = [
 
 ROW_BOTTOM = [
     TextField("step",        "Step:", 7),
-    TextField("score_max",   "Max Score:", 5),
+    TextField("score_max",   "Max Score:", 4),
     TextField("moves_max",   "Max Moves:", 7),
     TextField("game_max",    "Max Game:",  5),
+    TextField("score_per_snake", "Score/Snake:", 4),
+    TextField("score_per_game",  "Score/Game:",  4),
+    TextField("moves_per_game",  "Moves/Game:",  7),
+    TextField("moves_per_apple", "Moves/Apple:", 4),
     TextField("time",        "Time:", 7),
     # Put games last. If you have a lot of snakes this can go up very fast
     TextField("games",       "Games:",  7),
@@ -247,23 +264,22 @@ class Display:
         self._font.origin = True
 
         self._textrows = TextRows(font=self._font)
-        self._textrows.add(TextRow(self.TOP_TEXT_X,
+        self._textrows.add("top",
+                           TextRow(self.TOP_TEXT_X,
                                    self.TOP_TEXT_Y,
                                    self.TOP_WIDTH, ROW_TOP), self.windows)
 
-        self._textrows.add(TextRow(self.BOTTOM_TEXT_X,
+        self._textrows.add("bottom",
+                           TextRow(self.BOTTOM_TEXT_X,
                                    self.BOTTOM_TEXT_Y,
                                    self.BOTTOM_WIDTH, ROW_BOTTOM))
 
         Display._screen = pygame.display.set_mode((self.WINDOW_X * columns, self.WINDOW_Y * rows))
         rect = 0, 0, self.WINDOW_X * columns, self.WINDOW_Y * rows
         rect = pygame.draw.rect(Display._screen, Display.WALL, rect)
-        self.draw_text(0, "step")
-        self.draw_text(0, "time")
-        self.draw_text(0, "score_max")
-        self.draw_text(0, "moves_max")
-        self.draw_text(0, "game_max")
-        self.draw_text(0, "games")
+        for w in range(self.windows):
+            self.draw_text_row("top", w)
+        self.draw_text_row("bottom", 0)
         Display._updates = [rect]
 
     def stop(self):
@@ -322,6 +338,30 @@ class Display:
                         keys.append(event.unicode)
         return keys
 
+    def draw_text_row(self, row_name, w, fg_color=BACKGROUND, bg_color=WALL):
+        if not Display._screen:
+            return
+
+        for text_data in self._textrows.lookup_row(row_name):
+            text = text_data.prefix
+            x = text_data.prefix_x
+            y = text_data.y
+
+            # Draw new text
+            rect = self._font.get_rect(text)
+            rect.x += x
+            if rect.x + rect.width > text_data.max_width:
+                return
+            x += self._window_x[w]
+            y += self._window_y[w]
+            rect.x += self._window_x[w]
+            rect.y = y - rect.y
+            # print("Draw text", w, x, y, '"%s"' % text, x + self._window_x[w], y + self._window_y[w], rect, old_rect)
+            self._font.render_to(Display._screen, (x, y), None, fg_color, bg_color)
+            # We could union all rects, but for now this is only called on
+            # start() and start() already forces its own single rect
+            Display._updates.append(rect)
+
     def draw_text(self, w, name, value=None,
                        fg_color=BACKGROUND, bg_color=WALL):
         if not Display._screen:
@@ -330,15 +370,19 @@ class Display:
         text_data = self._textrows.lookup(name)
 
         if value is None:
-            old_rect = None
             text = text_data.prefix
+            old_rect = None
             x = text_data.prefix_x
         else:
+            text = text_data.format % value
+            old_text = text_data.old_text[w]
+            if old_text is not None and text == old_text:
+                # Update does nothing
+                return
             # Erase old text
             old_rect = text_data.old_rect[w]
             if old_rect:
                 pygame.draw.rect(Display._screen, bg_color, old_rect)
-            text = text_data.format % value
             x = text_data.format_x
         y = text_data.y
 
@@ -349,7 +393,7 @@ class Display:
             if value is not None and old_rect is not None:
                 Display._updates.append(old_rect)
                 text_data.old_rect[w] = None
-            return None
+            return
         x += self._window_x[w]
         y += self._window_y[w]
         rect.x += self._window_x[w]
@@ -365,6 +409,7 @@ class Display:
                 Display._updates.append(rect.union(old_rect))
             # Remember what we updated
             text_data.old_rect[w] = rect
+            text_data.old_text[w] = text
 
     def draw_field_empty(self, w):
         rect = (self._window_x[w] - self.OFFSET_X + self.BLOCK,
@@ -398,11 +443,7 @@ class Display:
                 #                self.last_collision_x[w],
                 #                self.last_collision_y[w],
                 #                Display.WALL)
-                self.draw_text(w, "score")
-                self.draw_text(w, "game")
                 self.draw_text(w, "game", nr_games[i])
-                self.draw_text(w, "moves")
-                self.draw_text(w, "snake")
                 self.draw_text(w, "snake", i)
                 # self.draw_text(w, "x")
                 # self.draw_text(w, "y")
@@ -442,14 +483,15 @@ class Display:
 
 # +
 import tensorflow as tf
-import tensorflow.keras as keras
 
 class ProbabilityDistribution(tf.keras.Model):
     def call(self, logits):
         # sample a random categorical action from given logits
-        return tf.squeeze(tf.random.categorical(logits, 1), axis=-1)
+        # return tf.squeeze(tf.random.categorical(logits, 1), axis=-1)
+        # sample random categorical actions from given logits
+        return tf.random.categorical(logits, 1)
 
-class ActorCriticModel(keras.Model):
+class ActorCriticModel(tf.keras.Model):
     def __init__(self, state_size, action_size):
         super().__init__()
         self.state_size = state_size
@@ -481,7 +523,8 @@ class ActorCriticModel(keras.Model):
         action = self.dist.predict(logits)
         # a simpler option, will become clear later why we don't use it
         # action = tf.random.categorical(logits, 1)
-        return np.squeeze(action, axis=-1), np.squeeze(value, axis=-1)
+        # return np.squeeze(action, axis=-1), np.squeeze(value, axis=-1)
+        return action, value
 
 3
 
@@ -608,6 +651,17 @@ class Snakes:
     def score_max(self):
         return self._score_max
 
+    def score_total_snakes(self):
+        return self._score_total_snakes
+
+    def score_total_games(self):
+        return self._score_total_games
+
+    def score_per_game(self):
+        if self.nr_games_total() <= 0:
+            return math.inf * snakes.score_total_games()
+        return snakes.score_total_games() / self.nr_games_total()
+
     # def nr_moves(self):
     #    return self._cur_move - self._nr_moves
 
@@ -616,6 +670,19 @@ class Snakes:
 
     def nr_moves_max(self):
         return self._moves_max
+
+    def nr_moves_total_games(self):
+        return self._moves_total_games
+
+    def nr_moves_per_game(self):
+        if self.nr_games_total() <= 0:
+            return math.inf * snakes.nr_moves_total_games()
+        return snakes.nr_moves_total_games() / self.nr_games_total()
+
+    def nr_moves_per_apple(self):
+        if self.score_total_games() <= 0:
+            return math.inf * snakes.nr_moves_total_games()
+        return snakes.nr_moves_total_games() / self.score_total_games()
 
     def nr_games(self, i):
         return self._nr_games[i]
@@ -645,7 +712,7 @@ class Snakes:
         # print("body length", self._body_length)
 
         # Bring potentially large cur_move into a reasonable range
-        # so tails will not use some large integer type
+        # so tail_offset will not use some large integer type
         offset = self._cur_move & self.MASK
         # print("Offset", offset)
         tail_offset = (offset - self._body_length) & self.MASK
@@ -805,10 +872,6 @@ class Snakes:
             if self._score_max < 0:
                 # This is the very first call. All pits need to be emptied
                 self._score_max = 0
-                self._moves_max = 0
-                display.draw_text(0, "score_max", self.score_max())
-                display.draw_text(0, "moves_max", self.nr_moves_max())
-                display.draw_text(0, "game_max", self.nr_games_max())
             else:
                 # Normal handling.
                 self._nr_games[collided] += 1
@@ -816,16 +879,18 @@ class Snakes:
                 nr_games_max = np.amax(self._nr_games[collided])
                 if nr_games_max > self._nr_games_max:
                     self._nr_games_max = nr_games_max
-                    display.draw_text(0, "game_max", self.nr_games_max())
-                score_max = np.amax(self._body_length[collided])
+                body_collided = self._body_length[collided]
+                body_total = body_collided.sum()
+                self._score_total_snakes -= body_total
+                self._score_total_games  += body_total
+                score_max = np.amax(body_collided)
                 if score_max > self._score_max:
                     self._score_max = score_max
-                    display.draw_text(0, "score_max", self.score_max())
-                moves_max = self._cur_move - np.amin(self._nr_moves[collided])
+                nr_moves = self._cur_move - self._nr_moves[collided]
+                self._moves_total_games += nr_moves.sum()
+                moves_max = np.amax(nr_moves)
                 if moves_max > self._moves_max:
                     self._moves_max = moves_max
-                    display.draw_text(0, "moves_max", self.nr_moves_max())
-            display.draw_text(0, "games", self.nr_games_total())
 
             # After the test because it skips the first _nr_games update
             w_index = is_collision[self._all_windows].nonzero()[0]
@@ -861,6 +926,7 @@ class Snakes:
 
         eaten = eat.nonzero()[0]
         if eaten.size:
+            self._score_total_snakes += eaten.size - collided.size
             self.new_apples(eaten)
             w_index = eat[self._all_windows].nonzero()[0]
             display.draw_apples(self._all_windows, w_index, self._apple_x, self._apple_y, self._body_length)
@@ -900,12 +966,24 @@ class Snakes:
         frame = self.frame()
         if frame == self._frame_max:
             return False
+
+        # draw_text is optimized to not draw any value that didn't change
         display.draw_text(0, "step", frame)
+        display.draw_text(0, "score_per_snake", self.score_total_snakes() / self._nr_snakes)
+        display.draw_text(0, "score_max", self.score_max())
+        display.draw_text(0, "moves_max", self.nr_moves_max())
+        display.draw_text(0, "game_max",  self.nr_games_max())
+        display.draw_text(0, "moves_max", self.nr_moves_max())
+        display.draw_text(0, "games", self.nr_games_total())
+        if self.nr_games_total():
+            display.draw_text(0, "score_per_game",  self.score_per_game())
+            display.draw_text(0, "moves_per_game",  self.nr_moves_per_game())
+            display.draw_text(0, "moves_per_apple", self.nr_moves_per_apple())
+        if self.score_total_games():
+            display.draw_text(0, "moves_per_apple", self.nr_moves_per_apple())
+
         elapsed = time.monotonic() - self._time_start;
-        elapsed = int(elapsed+0.5)
-        if elapsed != self._time_last:
-            display.draw_text(0, "time", elapsed)
-            self._time_last = elapsed
+        display.draw_text(0, "time", int(elapsed+0.5))
         display.update()
         return self.wait(display)
 
@@ -939,11 +1017,13 @@ class Snakes:
         self._nr_games_max = 0
         self._nr_games_total = 0
         self._score_max = -1
-        self._moves_max = -1
+        self._score_total_snakes = 0
+        self._score_total_games  = 0
+        self._moves_max = 0
+        self._moves_total_games = 0
         self._cur_move = Snakes.START_MOVE-1
         self._stepping = stepping
         self._paused = 0
-        self._time_last = ""
         # print("Start at time 0, frame", self.frame())
         self._time_process_start = time.process_time()
         self._time_start  = time.monotonic()
@@ -963,7 +1043,7 @@ class Snakes:
         self._time_process_end = time.process_time()
         self._time_end = time.monotonic()
         if self._pause_time:
-            self._paused += now - self._pause_time
+            self._paused += self._time_end - self._pause_time
             self._frames_skipped += self.frame() - self._pause_frame
 
         score_max = np.amax(self._body_length)
@@ -1088,7 +1168,7 @@ with Display(snakes,
 
 print("Elapsed %.3f s (%.3fs used), Frames: %d, Frame Rate %.3f" %
       (snakes.elapsed(), snakes.elapsed_process(), snakes.frame(), snakes.frame_rate()))
-print("Max Score: %d, Max Moves: %d" %
-      (snakes.score_max(), snakes.nr_moves_max()))
+print("Max Score: %d, Score/Game: %.3f, Max Moves: %d, Moves/Game: %.3f, Moves/Apple: %.3f" %
+      (snakes.score_max(), snakes.score_per_game(), snakes.nr_moves_max(), snakes.nr_moves_per_game(), snakes.nr_moves_per_apple()))
 print("Total Lost Games: %d, Lost Game Max: %d" %
       (snakes.nr_games_total(), snakes.nr_games_max()))
