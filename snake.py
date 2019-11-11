@@ -92,7 +92,7 @@ class TextRow:
 @dataclass
 class _TextRows:
     font:        pygame.freetype.Font
-    skip:        str = "  "
+    skip:        str = " "
 
 @dataclass
 class TextData:
@@ -528,7 +528,6 @@ class ActorCriticModel(tf.keras.Model):
 
 3
 
-
 # -
 
 def np_empty(shape, type):
@@ -561,10 +560,6 @@ class Snakes:
     POLL_SLOW = 1/25
     POLL_MAX = POLL_SLOW * 1.5
     WAIT_MIN = 1/1000
-
-    # Position of the first head of a game in the body array
-    # The position before that will be used for one dummy tail set
-    START_MOVE = 1
 
     # Possible directions for a random walk
     DIRECTIONS = [[1,0],[-1,0],[0,1],[0,-1]]
@@ -615,15 +610,6 @@ class Snakes:
         self._snake_body_x = np_empty((nr_snakes, self.AREA2), TYPE_POS)
         self._snake_body_y = np_empty((nr_snakes, self.AREA2), TYPE_POS)
 
-        # Very first run: body_length =0 and offset (cur_move) = START_MOVE-1
-        # So the very first tail_set() will access (offset-cur_move) & MASK
-        # So we need to make sure this is a coordinate inside _field so the
-        # border won't get destroyed. At all later times the field before the
-        # head will hav been set by previous runs
-        start_move = (Snakes.START_MOVE-1) & self.MASK
-        self._snake_body_x[:, start_move] = 1
-        self._snake_body_y[:, start_move] = 1
-
         # Body length measures the snake *without* the head
         # This is therefore also the score (if we start with length 0 snakes)
         self._body_length = np_empty(nr_snakes, TYPE_INDEX)
@@ -641,6 +627,9 @@ class Snakes:
     def rand_y(self, nr):
         offset = self.VIEW_Y
         return np.random.randint(offset, offset+self.HEIGHT, size=nr, dtype=TYPE_POS)
+
+    def nr_snakes(self):
+        return self._nr_snakes
 
     def scores(self):
         return self._body_length
@@ -839,7 +828,7 @@ class Snakes:
         return pos_x, pos_y
 
     def frame(self):
-        return self._cur_move - Snakes.START_MOVE
+        return self._cur_move
 
     def elapsed(self):
         return self._time_end - self._time_start
@@ -869,28 +858,23 @@ class Snakes:
         collided = is_collision.nonzero()[0]
         # print("Collided", collided)
         if collided.size:
-            if self._score_max < 0:
-                # This is the very first call. All pits need to be emptied
-                self._score_max = 0
-            else:
-                # Normal handling.
-                self._nr_games[collided] += 1
-                self._nr_games_total += collided.size
-                nr_games_max = np.amax(self._nr_games[collided])
-                if nr_games_max > self._nr_games_max:
-                    self._nr_games_max = nr_games_max
-                body_collided = self._body_length[collided]
-                body_total = body_collided.sum()
-                self._score_total_snakes -= body_total
-                self._score_total_games  += body_total
-                score_max = np.amax(body_collided)
-                if score_max > self._score_max:
-                    self._score_max = score_max
-                nr_moves = self._cur_move - self._nr_moves[collided]
-                self._moves_total_games += nr_moves.sum()
-                moves_max = np.amax(nr_moves)
-                if moves_max > self._moves_max:
-                    self._moves_max = moves_max
+            self._nr_games[collided] += 1
+            self._nr_games_total += collided.size
+            nr_games_max = np.amax(self._nr_games[collided])
+            if nr_games_max > self._nr_games_max:
+                self._nr_games_max = nr_games_max
+            body_collided = self._body_length[collided]
+            body_total = body_collided.sum()
+            self._score_total_snakes -= body_total
+            self._score_total_games  += body_total
+            score_max = np.amax(body_collided)
+            if score_max > self._score_max:
+                self._score_max = score_max
+            nr_moves = self._cur_move - self._nr_moves[collided]
+            self._moves_total_games += nr_moves.sum()
+            moves_max = np.amax(nr_moves)
+            if moves_max > self._moves_max:
+                self._moves_max = moves_max
 
             # After the test because it skips the first _nr_games update
             w_index = is_collision[self._all_windows].nonzero()[0]
@@ -991,19 +975,8 @@ class Snakes:
     def run_start(self, display,
                   fps      = DEFAULTS["--fps"],
                   stepping = DEFAULTS["--stepping"]):
-        nr_windows = min(self._nr_snakes, display.windows)
+        nr_windows = min(self.nr_snakes(), display.windows)
         self._all_windows = np.arange(nr_windows-1, -1, -1, dtype=TYPE_INDEX)
-
-        # Fake a collision for all snakes so all snakes will reset
-        x = np.zeros(self._nr_snakes, TYPE_POS)
-        y = np.zeros(self._nr_snakes, TYPE_POS)
-
-        # Make sure we won't hit an apple left from a previous run
-        # During collision handling all the x and y given above will get a
-        # random position inside the pit (x, y >= 1), so they are guaranteed
-        # not to hit an apple at (0,0)
-        self._apple_x.fill(0)
-        self._apple_y.fill(0)
 
         if fps > 0:
             self._poll_fast = 1 / fps
@@ -1013,15 +986,34 @@ class Snakes:
             raise(ValueError("fps must not be negative"))
         self._poll_fast0 = self._poll_fast
 
-        self._nr_games.fill(0)
         self._nr_games_max = 0
         self._nr_games_total = 0
-        self._score_max = -1
+        self._score_max = 0
         self._score_total_snakes = 0
         self._score_total_games  = 0
         self._moves_max = 0
         self._moves_total_games = 0
-        self._cur_move = Snakes.START_MOVE-1
+        self._cur_move = 0
+
+        self._nr_games.fill(0)
+        self._field[self._all_snakes, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH] = 0
+        self._nr_moves.fill(self._cur_move)
+        self._body_length.fill(0)
+        head_x = self.rand_x(self.nr_snakes())
+        head_y = self.rand_y(self.nr_snakes())
+        self.head_set(head_x, head_y)
+        self.new_apples(self._all_snakes)
+
+        for w in range(nr_windows):
+            i = self._all_windows[w]
+            display.draw_text(w, "moves", 0)
+            display.draw_text(w, "game", 0)
+            display.draw_text(w, "snake", i)
+            display.draw_field_empty(w)
+            display.draw_block(w, head_x[i], head_y[i], Display.HEAD)
+        display.draw_apples(self._all_windows, range(nr_windows),
+                            self._apple_x, self._apple_y, self._body_length)
+
         self._stepping = stepping
         self._paused = 0
         # print("Start at time 0, frame", self.frame())
@@ -1036,7 +1028,6 @@ class Snakes:
         else:
             self._pause_time = 0
             self._frames_skipped = 0
-        return x, y
 
     # We are done moving snake. Report some statistics and cleanup
     def run_finish(self):
@@ -1135,14 +1126,14 @@ class Snakes:
         # print("New game, head=%d [%d, %d]" % self.head())
         # print(self.view_string())
 
-        x, y = self.run_start(display, fps=fps, stepping=stepping)
+        self.run_start(display, fps=fps, stepping=stepping)
         while True:
-            is_collision, collided = self.move_collisions(display, x, y)
-            self.move_execute(display, x, y, is_collision, collided)
             if not self.move_finish(display):
                 self.run_finish()
                 return
             x, y = self.move_select()
+            is_collision, collided = self.move_collisions(display, x, y)
+            self.move_execute(display, x, y, is_collision, collided)
 
 # +
 columns    = int(arguments["--columns"])
