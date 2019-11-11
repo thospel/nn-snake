@@ -18,7 +18,7 @@
 
 Usage:
   snake.py [-f <file>] [--snakes=<snakes>] [--stepping] [--fps=<fps>]
-           [--width=<width>] [--height=<height>]
+           [--width=<width>] [--height=<height>] [--frames=<frames>]
            [--columns=columns] [--rows=rows] [--block=<block_size>]
   snake.py (-h | --help)
   snake..py --version
@@ -35,6 +35,7 @@ Options:
   --height=<height>     Pit height in blocks [default: 40]
   --columns=<columns>   Columns of pits to display [default: 2]
   --rows=<rows>         Rows of pits to display [default: 1]
+  --frames=<frames>     Stop automatically at this frames number [Default: -1]
   -f <file>:            Used by jupyter, ignored
 
 Display key actions:
@@ -280,14 +281,16 @@ class Display:
                 print("No display updates")
 
     def __enter__(self):
+        if Display._screen:
+            raise(AssertionError("Attempt to start multiple displays at the same time"))
         self.start()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.stop()
 
-    def __del__(self):
-        self.stop()
+    # Don't do a stop() in __del__ since object desctruction can be delayed
+    # and a new display can have started
 
     def update(self):
         if Display._updates:
@@ -309,17 +312,21 @@ class Display:
         if to_sleep > 0:
             time.sleep(to_sleep)
         keys = []
-        events = pygame.event.get()
-        if events:
-            for event in events:
-                if event.type == QUIT:
-                    keys.append("q")
-                elif event.type == KEYDOWN:
-                    keys.append(event.unicode)
+        if Display._screen:
+            events = pygame.event.get()
+            if events:
+                for event in events:
+                    if event.type == QUIT:
+                        keys.append("q")
+                    elif event.type == KEYDOWN:
+                        keys.append(event.unicode)
         return keys
 
     def draw_text(self, w, name, value=None,
                        fg_color=BACKGROUND, bg_color=WALL):
+        if not Display._screen:
+            return
+
         text_data = self._textrows.lookup(name)
 
         if value is None:
@@ -433,6 +440,52 @@ class Display:
             self.draw_text(w, "score", score[i])
 
 
+# +
+import tensorflow as tf
+import tensorflow.keras as keras
+
+class ProbabilityDistribution(tf.keras.Model):
+    def call(self, logits):
+        # sample a random categorical action from given logits
+        return tf.squeeze(tf.random.categorical(logits, 1), axis=-1)
+
+class ActorCriticModel(keras.Model):
+    def __init__(self, state_size, action_size):
+        super().__init__()
+        self.state_size = state_size
+        self.action_size = action_size
+        self.dense1 = layers.Dense(100, activation='relu')
+        self.policy_logits = layers.Dense(action_size)
+        self.dense2 = layers.Dense(100, activation='relu')
+        self.values = layers.Dense(1)
+
+    def call(self, inputs):
+        # Forward pass
+        x = self.dense1(inputs)
+        logits = self.policy_logits(x)
+        v1 = self.dense2(inputs)
+        values = self.values(v1)
+        return logits, values
+
+    def call(self, inputs):
+        # inputs is a numpy array, convert to Tensor
+        x = tf.convert_to_tensor(inputs, dtype=tf.float32)
+        # separate hidden layers from the same input tensor
+        hidden_logs = self.hidden1(x)
+        hidden_vals = self.hidden2(x)
+        return self.logits(hidden_logs), self.value(hidden_vals)
+
+    def action_value(self, obs):
+        # executes call() under the hood
+        logits, value = self.predict(obs)
+        action = self.dist.predict(logits)
+        # a simpler option, will become clear later why we don't use it
+        # action = tf.random.categorical(logits, 1)
+        return np.squeeze(action, axis=-1), np.squeeze(value, axis=-1)
+
+3
+
+
 # -
 
 def np_empty(shape, type):
@@ -472,19 +525,27 @@ class Snakes:
 
     # Possible directions for a random walk
     DIRECTIONS = [[1,0],[-1,0],[0,1],[0,-1]]
+    NR_DIRECTION = len(DIRECTIONS)
     DIRECTION_PERMUTATIONS = np.array(list(itertools.permutations(DIRECTIONS)), dtype=TYPE_POS)
     NR_DIRECTION_PERMUTATIONS = len(DIRECTION_PERMUTATIONS)
     DIRECTION_PERMUTATIONS_X=DIRECTION_PERMUTATIONS[:,:,0]
     DIRECTION_PERMUTATIONS_Y=DIRECTION_PERMUTATIONS[:,:,1]
+    DIRECTION_X = np.array([d[0] for d in DIRECTIONS], dtype=TYPE_POS)
+    DIRECTION_Y = np.array([d[1] for d in DIRECTIONS], dtype=TYPE_POS)
 
     def __init__(self, nr_snakes=1,
-                 width  = DEFAULTS["--width"],
-                 height = DEFAULTS["--height"],
+                 width     = DEFAULTS["--width"],
+                 height    = DEFAULTS["--height"],
+                 frame_max = DEFAULTS["--frames"],
                  view_x=0, view_y=0):
+        if nr_snakes <= 0:
+            raise(ValueError("Number of snakes must be positive"))
+
         self.windows = None
 
         self._nr_snakes = nr_snakes
         self._all_snakes = np.arange(nr_snakes, dtype=TYPE_INDEX)
+        self._frame_max = frame_max
 
         self.VIEW_X = view_x or VIEW_X0
         self.VIEW_Y = view_y or VIEW_Y0
@@ -505,6 +566,7 @@ class Snakes:
         # The playing field starts out as nr_snakes copies of the empty pit
         # Notice that we store in row major order, so use field[y,x]
         self._field = self._empty_pit.reshape(1,width1,height1).repeat(nr_snakes, axis=0)
+        # self._apple_pit = np.zero((self.HEIGHT, self.WIDTH, self.HEIGHT, self.WIDTH),
 
         # Position arrays are split in x and y so we can do fast _field indexing
         self._snake_body_x = np_empty((nr_snakes, self.AREA2), TYPE_POS)
@@ -660,10 +722,17 @@ class Snakes:
             raise(AssertionError("Impossible apple direction"))
         return x+dx, y+dy
 
+    # Pick a completely random direction
+    def plan_random(self):
+        rand_dir = np.random.randint(Snakes.NR_DIRECTION, size=self._nr_snakes)
+        x = self.head_x() + Snakes.DIRECTION_X[rand_dir]
+        y = self.head_y() + Snakes.DIRECTION_Y[rand_dir]
+        return x, y
+
     # Pick a random direction that isn't blocked
     # Or just a random direction if all are blocked
     # But only for snakes with an index in collided
-    def plan_random(self, collided):
+    def plan_random_unblocked(self, collided):
         # different permutation for each collision
         direction_index = np.random.randint(Snakes.NR_DIRECTION_PERMUTATIONS,
                                             size=collided.size)
@@ -810,11 +879,13 @@ class Snakes:
         # print("-------------------")
 
     def move_select(self):
+        # return self.plan_random_unblocked(self._all_snakes)
+        # return self.plan_random()
         x, y = self.plan_greedy()
         collided = self._field[self._all_snakes, y, x].nonzero()[0]
         # print("Greedy Collided", collided)
         if collided.size:
-            rand_x, rand_y = self.plan_random(collided)
+            rand_x, rand_y = self.plan_random_unblocked(collided)
             x[collided] = rand_x
             y[collided] = rand_y
         # print("Move")
@@ -824,8 +895,12 @@ class Snakes:
     # Do whatever needs to be done after moving the snake
     # In this case we dislay the current state and wait for a bit
     # while handling events
+    # Return True if you want to continue running
     def move_finish(self, display):
-        display.draw_text(0, "step", self.frame())
+        frame = self.frame()
+        if frame == self._frame_max:
+            return False
+        display.draw_text(0, "step", frame)
         elapsed = time.monotonic() - self._time_start;
         elapsed = int(elapsed+0.5)
         if elapsed != self._time_last:
@@ -857,7 +932,7 @@ class Snakes:
         elif fps == 0:
             self._poll_fast = 0
         else:
-            raise(RuntimeError("fps must not be negative"))
+            raise(ValueError("fps must not be negative"))
         self._poll_fast0 = self._poll_fast
 
         self._nr_games.fill(0)
@@ -885,6 +960,12 @@ class Snakes:
 
     # We are done moving snake. Report some statistics and cleanup
     def run_finish(self):
+        self._time_process_end = time.process_time()
+        self._time_end = time.monotonic()
+        if self._pause_time:
+            self._paused += now - self._pause_time
+            self._frames_skipped += self.frame() - self._pause_frame
+
         score_max = np.amax(self._body_length)
         if score_max > self._score_max:
             self._score_max = score_max
@@ -924,15 +1005,7 @@ class Snakes:
                 now = time.monotonic()
             # events seem to come without timestamp, so just assume "now"
             for key in events:
-                if key == "q":
-                    self._time_process_end = time.process_time()
-                    self._time_end  = now
-                    if self._pause_time:
-                        self._paused += now - self._pause_time
-                        self._frames_skipped += self.frame() - self._pause_frame
-
-                    return False
-                elif key == " " or key == "r":
+                if key == " " or key == "r":
                     # Stop/start running
                     if self._pause_time:
                         self._time_target = now
@@ -962,6 +1035,9 @@ class Snakes:
                     self._time_target -= self._poll_fast
                     self._poll_fast = self._poll_fast0
                     self._time_target = max(now, self._time_target + self._poll_fast)
+                elif key == "q":
+                    return False
+
             if self._pause_time:
                 if self._stepping:
                     break
@@ -988,22 +1064,23 @@ class Snakes:
                 return
             x, y = self.move_select()
 
-
 # +
-columns = int(arguments["--columns"])
-rows = int(arguments["--rows"])
-nr_snakes = int(arguments["--snakes"]) or rows*columns
+columns    = int(arguments["--columns"])
+rows       = int(arguments["--rows"])
+nr_snakes  = int(arguments["--snakes"]) or rows*columns
 block_size = int(arguments["--block"])
 
-snakes = Snakes(nr_snakes=nr_snakes,
-                width=int(arguments["--width"]),
-                height=int(arguments["--height"]))
+snakes = Snakes(nr_snakes = nr_snakes,
+                width     = int(arguments["--width"]),
+                height    = int(arguments["--height"]),
+                frame_max = int(arguments["--frames"]))
 
+# +
 with Display(snakes,
              columns=columns,
              rows=rows,
              block_size = block_size,
-             slow_updates=0) as display:
+             slow_updates =0 ) as display:
     while snakes.draw_run(display,
                           fps=float(arguments["--fps"]),
                           stepping=arguments["--stepping"]):
@@ -1015,4 +1092,3 @@ print("Max Score: %d, Max Moves: %d" %
       (snakes.score_max(), snakes.nr_moves_max()))
 print("Total Lost Games: %d, Lost Game Max: %d" %
       (snakes.nr_games_total(), snakes.nr_games_max()))
-# -
