@@ -547,7 +547,9 @@ def np_empty(shape, type):
 TYPE_POS   = np.int8
 TYPE_BOOL  = np.bool
 TYPE_INDEX = np.intp
-TYPE_FLAG  = np.uint8
+# Using bool for TYPE_FLAG is about 5% faster
+# TYPE_FLAG  = np.uint8
+TYPE_FLAG  = np.bool
 TYPE_SCORE = np.uint32
 TYPE_MOVES = np.uint32
 TYPE_GAMES = np.uint32
@@ -604,11 +606,18 @@ class Snakes:
         # Pit is just the edges
         self._empty_pit = np.ones((width1, height1), dtype=TYPE_FLAG)
         self._empty_pit[self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH] = 0
-        # self._field = np.ones((nr_snakes, width1, height1), dtype=TYPE_FLAG)
+        # self._field1 = np.ones((nr_snakes, width1, height1), dtype=TYPE_FLAG)
 
         # The playing field starts out as nr_snakes copies of the empty pit
         # Notice that we store in row major order, so use field[y,x]
-        self._field = self._empty_pit.reshape(1,width1,height1).repeat(nr_snakes, axis=0)
+        self._field1 = self._empty_pit.reshape(1,width1,height1).repeat(nr_snakes, axis=0)
+        self._field0 = self._field1[:, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH]
+        if self._field0.base is not self._field1:
+            raise(AssertionError("field0 is a copy instead of a view"))
+        self._field = self._field1.reshape(nr_snakes, width1*height1)
+        if self._field.base is not self._field1:
+            raise(AssertionError("field0 is a copy instead of a view"))
+
         # self._apple_pit = np.zero((self.HEIGHT, self.WIDTH, self.HEIGHT, self.WIDTH),
 
         # Position arrays are split in x and y so we can do fast _field indexing
@@ -699,7 +708,7 @@ class Snakes:
         offset = self._cur_move & self.MASK
         self._snake_body_x[self._all_snakes, offset] = x
         self._snake_body_y[self._all_snakes, offset] = y
-        self._field[self._all_snakes, y, x] = 1
+        self._field1[self._all_snakes, y, x] = 1
 
     def tail_set(self, values):
         # print("Eat", values)
@@ -715,7 +724,7 @@ class Snakes:
         y = self._snake_body_y[self._all_snakes, tail_offset]
         # print("tail pos")
         # print(np.dstack((x, y)))
-        self._field[self._all_snakes, y, x] = values
+        self._field1[self._all_snakes, y, x] = values
         return x, y
 
     """
@@ -744,7 +753,7 @@ class Snakes:
 
     def view_port(self):
         index,x,y = self.head()
-        return self._field[:,x-VIEW_X0:x+VIEW_X2,y-VIEW_Y0:y+VIEW_Y2]
+        return self._field1[:,x-VIEW_X0:x+VIEW_X2,y-VIEW_Y0:y+VIEW_Y2]
     """
 
     # Sprinkle new apples in all pits where the snake ate them (todo)
@@ -759,7 +768,7 @@ class Snakes:
             rand_y = self.rand_y(todo.size)
             self._apple_x[todo] = rand_x
             self._apple_y[todo] = rand_y
-            fail = self._field[todo, rand_y, rand_x]
+            fail = self._field1[todo, rand_y, rand_x]
             # Index with boolean is grep
             todo = todo[fail != 0]
             # print("todo", todo)
@@ -814,7 +823,7 @@ class Snakes:
         y = self.head_y()[collided] + dy
 
         # Is there nothing on the new coordinate ?
-        empty = self._field[collided, y, x] ^ 1
+        empty = self._field1[collided, y, x] ^ 1
         # which permutation (select) for which snake(i) is empty
         select, i = empty.nonzero()
 
@@ -859,7 +868,7 @@ class Snakes:
 
     # In all pits where the snake lost we need to restart the game
     def move_collisions(self, display, x, y):
-        is_collision = self._field[self._all_snakes, y, x]
+        is_collision = self._field1[self._all_snakes, y, x]
         collided = is_collision.nonzero()[0]
         # print("Collided", collided)
         if collided.size:
@@ -885,7 +894,7 @@ class Snakes:
             w_index = is_collision[self._all_windows].nonzero()[0]
             display.draw_collisions(self._all_windows, w_index, x, y, self._nr_games)
 
-            self._field[collided, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH] = 0
+            self._field0[collided] = 0
 
             # We are currently doing setup, so this move doesn't count
             self._nr_moves[collided] = self._cur_move + 1
@@ -919,10 +928,13 @@ class Snakes:
             self.new_apples(eaten)
             w_index = eat[self._all_windows].nonzero()[0]
             display.draw_apples(self._all_windows, w_index, self._apple_x, self._apple_y, self._body_length)
+            i0 = self._all_windows[0]
+            if eat[i0]:
+                print(np.array(self._field0[i0], dtype=np.uint8))
 
         # print(self.view_string())
 
-        # print("Field\n", self._field)
+        # print("Field\n", self._field1)
         #print("body_x", self._snake_body_x)
         #print("body_y", self._snake_body_y)
         # print("body")
@@ -937,7 +949,7 @@ class Snakes:
         # return self.plan_random_unblocked(self._all_snakes)
         # return self.plan_random()
         x, y = self.plan_greedy()
-        collided = self._field[self._all_snakes, y, x].nonzero()[0]
+        collided = self._field1[self._all_snakes, y, x].nonzero()[0]
         # print("Greedy Collided", collided)
         if collided.size:
             rand_x, rand_y = self.plan_random_unblocked(collided)
@@ -1001,7 +1013,7 @@ class Snakes:
         self._cur_move = 0
 
         self._nr_games.fill(0)
-        self._field[self._all_snakes, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH] = 0
+        self._field0.fill(0)
         self._nr_moves.fill(self._cur_move)
         self._body_length.fill(0)
         head_x = self.rand_x(self.nr_snakes())

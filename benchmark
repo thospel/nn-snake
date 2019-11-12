@@ -8,7 +8,6 @@ if test "$1" = "--git"; then
 fi
 # speed=`taskset -c 1 python snake.py --benchmark`
 speed=`python -- "$file" --benchmark`
-echo $out
 if test "$1" = "--git"; then
     host=`hostname`
     tagname="bench-$host=$speed"
@@ -28,3 +27,4 @@ if test "$1" = "--git"; then
 
     rm -f -- "$file"
 fi
+echo "speed = $speed steps / sec"
