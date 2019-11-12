@@ -434,13 +434,13 @@ class Display:
             Display._updates.append(rect)
         return rect
 
-    def draw_collisions(self, all_windows, w_index, x, y, nr_games):
-        for w in w_index:
-            i = all_windows[w]
+    def draw_collisions(self, i_index, w_index, pos, nr_games):
+        y , x = pos
+        for w, i, x, y in zip(w_index, i_index, pos[1], pos[0]):
             if False:
                 # This test was for when the idea was to freeze some snakes
                 # if self._nr_moves[w] > self._cur_move:
-                self.draw_block(w, x[i], y[i], Display.COLLISION)
+                self.draw_block(w, x, y, Display.COLLISION)
             else:
                 #self.draw_block(w,
                 #                self.last_collision_x[w],
@@ -453,10 +453,13 @@ class Display:
                 self.draw_field_empty(w)
 
     def draw_move(self,
-                  all_windows, head_x_new, head_y_new,
-                  is_collision, head_x_old, head_y_old,
-                  eat, tail_x, tail_y,
+                  all_windows, w_head_new,
+                  is_collision, w_head_old,
+                  eat, w_tail,
                   w_nr_moves):
+        w_head_y_new, w_head_x_new = w_head_new
+        w_head_y_old, w_head_x_old = w_head_old
+        w_tail_y, w_tail_x = w_tail
         for w in range(all_windows.size):
             i = all_windows[w]
             if is_collision[i]:
@@ -464,23 +467,25 @@ class Display:
             else:
                 # The current head becomes body
                 # (For length 1 snakes the following tail erase will undo this)
-                body_rect = self.draw_block(w, head_x_old[i], head_y_old[i], Display.BODY, update=False)
+                body_rect = self.draw_block(w, w_head_x_old[w], w_head_y_old[w], Display.BODY, update=False)
             if not eat[i]:
                 # Drop the tail if we didn't eat an apple then
-                self.draw_block(w, tail_x[i], tail_y[i], Display.BACKGROUND)
+                self.draw_block(w, w_tail_x[w], w_tail_y[w], Display.BACKGROUND)
             if body_rect:
-                head_rect = self.draw_block(w, head_x_new[i], head_y_new[i], Display.HEAD, update=False)
+                head_rect = self.draw_block(w, w_head_x_new[w], w_head_y_new[w], Display.HEAD, update=False)
                 Display._updates.append(head_rect.union(body_rect))
             else:
-                self.draw_block(w, head_x_new[i], head_y_new[i], Display.HEAD)
+                self.draw_block(w, w_head_x_new[w], w_head_y_new[w], Display.HEAD)
             self.draw_text(w, "moves", w_nr_moves[w])
-            # self.draw_text(w, "x", head_x_new[i])
-            # self.draw_text(w, "y", head_y_new[i])
+            # self.draw_text(w, "x", w_head_x_new[w])
+            # self.draw_text(w, "y", w_head_y_new[w])
 
-    def draw_apples(self, all_windows, w_index, apple_x, apple_y, score):
-        for w in w_index:
-            i = all_windows[w]
-            self.draw_block(w, apple_x[i], apple_y[i], Display.APPLE)
+    def draw_apples(self, i_index, w_index, apple, score):
+        apple_y, apple_x = apple
+        # print("draw_apples", i_index, w_index, score)
+        # print(np.dstack((apple_x, apple_y)))
+        for i, w, x, y in zip(i_index, w_index, apple_x, apple_y):
+            self.draw_block(w, x, y, Display.APPLE)
             self.draw_text(w, "score", score[i])
 
 
@@ -540,11 +545,18 @@ def np_empty(shape, type):
     # Fill with garbage for debug
     return np.random.randint(100, size=shape, dtype=type)
 
+def print_xy(text, x, y):
+    print(text)
+    print(np.dstack((x, y)))
+
+def print_yx(text, pos):
+    print_xy(text, pos[1], pos[0])
+
 
 # +
 
 # TYPE_POS = np.uint8
-TYPE_POS   = np.int8
+TYPE_POS   = np.int16
 TYPE_BOOL  = np.bool
 TYPE_INDEX = np.intp
 # Using bool for TYPE_FLAG is about 5% faster
@@ -569,14 +581,15 @@ class Snakes:
     WAIT_MIN = 1/1000
 
     # Possible directions for a random walk
-    DIRECTIONS = [[1,0],[-1,0],[0,1],[0,-1]]
-    NR_DIRECTION = len(DIRECTIONS)
-    DIRECTION_PERMUTATIONS = np.array(list(itertools.permutations(DIRECTIONS)), dtype=TYPE_POS)
-    NR_DIRECTION_PERMUTATIONS = len(DIRECTION_PERMUTATIONS)
-    DIRECTION_PERMUTATIONS_X=DIRECTION_PERMUTATIONS[:,:,0]
-    DIRECTION_PERMUTATIONS_Y=DIRECTION_PERMUTATIONS[:,:,1]
-    DIRECTION_X = np.array([d[0] for d in DIRECTIONS], dtype=TYPE_POS)
-    DIRECTION_Y = np.array([d[1] for d in DIRECTIONS], dtype=TYPE_POS)
+    DIRECTIONS0 = np.array([[1,0],[-1,0],[0,1],[0,-1]])
+    DIRECTIONS0_X = DIRECTIONS0[:,0]
+    DIRECTIONS0_Y = DIRECTIONS0[:,1]
+    NR_DIRECTIONS = len(DIRECTIONS0)
+
+    DIRECTION_PERMUTATIONS0 = np.array(list(itertools.permutations(DIRECTIONS0)), dtype=TYPE_POS)
+    NR_DIRECTION_PERMUTATIONS = len(DIRECTION_PERMUTATIONS0)
+    DIRECTION_PERMUTATIONS0_X=DIRECTION_PERMUTATIONS0[:,:,0]
+    DIRECTION_PERMUTATIONS0_Y=DIRECTION_PERMUTATIONS0[:,:,1]
 
     def __init__(self, nr_snakes=1,
                  width     = int(DEFAULTS["--width"]),
@@ -601,46 +614,47 @@ class Snakes:
         self.AREA2 = 1 << (self.AREA-1).bit_length()
         self.MASK  = self.AREA2 - 1
 
-        width1  = self.HEIGHT+2*self.VIEW_Y
-        height1 = self.WIDTH +2*self.VIEW_X
+        self.HEIGHT1 = self.HEIGHT+2*self.VIEW_Y
+        self.WIDTH1  = self.WIDTH +2*self.VIEW_X
+
+        self.DIRECTIONS = Snakes.DIRECTIONS0_X + Snakes.DIRECTIONS0_Y * self.WIDTH1
+        self.DIRECTION_PERMUTATIONS = Snakes.DIRECTION_PERMUTATIONS0_X + Snakes.DIRECTION_PERMUTATIONS0_Y * self.WIDTH1
+
         # Pit is just the edges
-        self._empty_pit = np.ones((width1, height1), dtype=TYPE_FLAG)
+        self._empty_pit = np.ones((self.HEIGHT1, self.WIDTH1), dtype=TYPE_FLAG)
         self._empty_pit[self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH] = 0
-        # self._field1 = np.ones((nr_snakes, width1, height1), dtype=TYPE_FLAG)
+        # self._field1 = np.ones((nr_snakes, self.HEIGHT1, self.WIDTH1), dtype=TYPE_FLAG)
 
         # The playing field starts out as nr_snakes copies of the empty pit
         # Notice that we store in row major order, so use field[y,x]
-        self._field1 = self._empty_pit.reshape(1,width1,height1).repeat(nr_snakes, axis=0)
+        self._field1 = self._empty_pit.reshape(1,self.HEIGHT1,self.WIDTH1).repeat(nr_snakes, axis=0)
         self._field0 = self._field1[:, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH]
         if self._field0.base is not self._field1:
             raise(AssertionError("field0 is a copy instead of a view"))
-        self._field = self._field1.reshape(nr_snakes, width1*height1)
+        self._field = self._field1.reshape(nr_snakes, self.HEIGHT1*self.WIDTH1)
         if self._field.base is not self._field1:
             raise(AssertionError("field0 is a copy instead of a view"))
 
         # self._apple_pit = np.zero((self.HEIGHT, self.WIDTH, self.HEIGHT, self.WIDTH),
 
-        # Position arrays are split in x and y so we can do fast _field indexing
-        self._snake_body_x = np_empty((nr_snakes, self.AREA2), TYPE_POS)
-        self._snake_body_y = np_empty((nr_snakes, self.AREA2), TYPE_POS)
+        self._snake_body = np_empty((nr_snakes, self.AREA2), TYPE_POS)
 
         # Body length measures the snake *without* the head
         # This is therefore also the score (if we start with length 0 snakes)
         self._body_length = np_empty(nr_snakes, TYPE_INDEX)
-        self._head_x   = np_empty(nr_snakes, TYPE_POS)
-        self._head_y   = np_empty(nr_snakes, TYPE_POS)
-        self._apple_x  = np_empty(nr_snakes, TYPE_POS)
-        self._apple_y  = np_empty(nr_snakes, TYPE_POS)
+        self._head     = np_empty(nr_snakes, TYPE_POS)
+        self._apple    = np_empty(nr_snakes, TYPE_POS)
         self._nr_moves = np_empty(nr_snakes, TYPE_MOVES)
         self._nr_games = np_empty(nr_snakes, TYPE_GAMES)
 
-    def rand_x(self, nr):
-        offset = self.VIEW_X
-        return np.random.randint(offset, offset+self.WIDTH,  size=nr, dtype=TYPE_POS)
-
-    def rand_y(self, nr):
-        offset = self.VIEW_Y
-        return np.random.randint(offset, offset+self.HEIGHT, size=nr, dtype=TYPE_POS)
+    def rand(self, nr):
+        offset_x = self.VIEW_X
+        rand_x = np.random.randint(offset_x, offset_x+self.WIDTH,  size=nr, dtype=TYPE_POS)
+        offset_y = self.VIEW_Y
+        rand_y = np.random.randint(offset_y, offset_y+self.HEIGHT, size=nr, dtype=TYPE_POS)
+        # print("Rand:", self.WIDTH1)
+        # print(np.dstack((rand_x, rand_y)))
+        return rand_x + rand_y * self.WIDTH1
 
     def nr_snakes(self):
         return self._nr_snakes
@@ -696,19 +710,14 @@ class Snakes:
     def nr_games_total(self):
         return self._nr_games_total
 
-    def head_x(self):
-        return self._head_x
+    def head(self):
+        return self._head
 
-    def head_y(self):
-        return self._head_y
-
-    def head_set(self, x, y):
-        self._head_x = x
-        self._head_y = y
+    def head_set(self, head_new):
+        self._head = head_new
         offset = self._cur_move & self.MASK
-        self._snake_body_x[self._all_snakes, offset] = x
-        self._snake_body_y[self._all_snakes, offset] = y
-        self._field1[self._all_snakes, y, x] = 1
+        self._snake_body[self._all_snakes, offset] = head_new
+        self._field[self._all_snakes, head_new] = 1
 
     def tail_set(self, values):
         # print("Eat", values)
@@ -720,12 +729,10 @@ class Snakes:
         # print("Offset", offset)
         tail_offset = (offset - self._body_length) & self.MASK
         # print("tail offset", tail_offset)
-        x = self._snake_body_x[self._all_snakes, tail_offset]
-        y = self._snake_body_y[self._all_snakes, tail_offset]
-        # print("tail pos")
-        # print(np.dstack((x, y)))
-        self._field1[self._all_snakes, y, x] = values
-        return x, y
+        pos = self._snake_body[self._all_snakes, tail_offset]
+        # print_xy("tail pos", x, y))
+        self._field[self._all_snakes, pos] = values
+        return pos
 
     """
     def view_string(self):
@@ -756,30 +763,40 @@ class Snakes:
         return self._field1[:,x-VIEW_X0:x+VIEW_X2,y-VIEW_Y0:y+VIEW_Y2]
     """
 
+    def yx(self, array):
+        y, x = np.divmod(array, self.WIDTH1)
+        # print_xy("yx", x, y)
+        return y, x
+
     # Sprinkle new apples in all pits where the snake ate them (todo)
     def new_apples(self, todo):
         too_large = self._body_length[todo] >= self.AREA-1
         if too_large.any():
             raise(AssertionError("No place for apples"))
 
-        # print("todo", todo)
+        # print("New apples", todo)
+        # old_todo = todo.copy()
         while todo.size:
-            rand_x = self.rand_x(todo.size)
-            rand_y = self.rand_y(todo.size)
-            self._apple_x[todo] = rand_x
-            self._apple_y[todo] = rand_y
-            fail = self._field1[todo, rand_y, rand_x]
+            rand = self.rand(todo.size)
+            self._apple[todo] = rand
+            fail = self._field[todo, rand]
             # Index with boolean is grep
             todo = todo[fail != 0]
-            # print("todo", todo)
+            # print("New apples todo", todo)
+        # print_yx("Placed apples", self.yx(self._apple[old_todo]))
 
     # Plot the shortest course to the apple completely ignoring any snake body
     def plan_greedy(self):
-        x = self.head_x()
-        y = self.head_y()
+        head = self.head()
+        y, x             = self.yx(head)
+        apple_y, apple_x = self.yx(self._apple)
 
-        dx = self._apple_x - x
-        dy = self._apple_y - y
+        # print_xy("Greedy Heads:", x, y))
+        # print_xy("Apples:", apple_x, apple_y))
+
+        dx = apple_x - x
+        dy = apple_y - y
+        # print_xy("Delta:", np.dstack((dx, dy)))
         abs_dx = np.abs(dx)
         abs_dy = np.abs(dy)
         dir_x = abs_dx > abs_dy
@@ -790,14 +807,13 @@ class Snakes:
         diag = dx == dy
         if np.count_nonzero(diag):
             raise(AssertionError("Impossible apple direction"))
-        return x+dx, y+dy
+        delta = dx + dy * self.WIDTH1
+        return head+delta
 
     # Pick a completely random direction
     def plan_random(self):
         rand_dir = np.random.randint(Snakes.NR_DIRECTION, size=self._nr_snakes)
-        x = self.head_x() + Snakes.DIRECTION_X[rand_dir]
-        y = self.head_y() + Snakes.DIRECTION_Y[rand_dir]
-        return x, y
+        return self.head() + self.DIRECTION[rand_dir]
 
     # Pick a random direction that isn't blocked
     # Or just a random direction if all are blocked
@@ -815,31 +831,27 @@ class Snakes:
         # (and avoids the awkward transpose)
 
         # different permutation of directions for each collision
-        dx = Snakes.DIRECTION_PERMUTATIONS_X[direction_index].transpose()
-        dy = Snakes.DIRECTION_PERMUTATIONS_Y[direction_index].transpose()
+        delta = self.DIRECTION_PERMUTATIONS[direction_index].transpose()
 
         # different permutation of test coordinates for each collision
-        x = self.head_x()[collided] + dx
-        y = self.head_y()[collided] + dy
+        p = self.head()[collided] + delta
 
         # Is there nothing on the new coordinate ?
-        empty = self._field1[collided, y, x] ^ 1
+        empty = self._field[collided, p] ^ 1
         # which permutation (select) for which snake(i) is empty
         select, i = empty.nonzero()
 
         # Fill result with a random direction for each snake
         # (fallback for if the head is completely surrounded)
-        pos_x = x[0].copy()
-        pos_y = y[0].copy()
+        pos = p[0].copy()
 
         # Copy coordinates of empty neighbours
         # Each snake can get coordinates assigned multiple times
         # I assume some assignment wins and there is no tearing
         # (I do not know if numpy enforces anything like this)
-        pos_x[i] = x[select, i]
-        pos_y[i] = y[select, i]
+        pos[i] = p[select, i]
 
-        return pos_x, pos_y
+        return pos
 
     def frame(self):
         return self._cur_move
@@ -867,8 +879,8 @@ class Snakes:
         return frames / elapsed
 
     # In all pits where the snake lost we need to restart the game
-    def move_collisions(self, display, x, y):
-        is_collision = self._field1[self._all_snakes, y, x]
+    def move_collisions(self, display, pos):
+        is_collision = self._field[self._all_snakes, pos]
         collided = is_collision.nonzero()[0]
         # print("Collided", collided)
         if collided.size:
@@ -892,7 +904,8 @@ class Snakes:
 
             # After the test because it skips the first _nr_games update
             w_index = is_collision[self._all_windows].nonzero()[0]
-            display.draw_collisions(self._all_windows, w_index, x, y, self._nr_games)
+            i_index = self._all_windows[w_index]
+            display.draw_collisions(i_index, w_index, self.yx(pos[i_index]), self._nr_games)
 
             self._field0[collided] = 0
 
@@ -900,15 +913,13 @@ class Snakes:
             self._nr_moves[collided] = self._cur_move + 1
 
             self._body_length[collided]  = 0
-            rand_x = self.rand_x(collided.size)
-            rand_y = self.rand_y(collided.size)
-            x[collided] = rand_x
-            y[collided] = rand_y
+            # print("New Heads after collision")
+            pos[collided] = self.rand(collided.size)
         return is_collision, collided
 
-    def move_execute(self, display, x, y, is_collision, collided):
-        eat = (x == self._apple_x) & (y == self._apple_y)
-        tail_pos_x, tail_pos_y = self.tail_set(eat)
+    def move_execute(self, display, pos, is_collision, collided):
+        eat = pos == self._apple
+        tail_pos = self.tail_set(eat)
         self._body_length += eat
         if collided.size:
             eat[collided] = True
@@ -916,48 +927,43 @@ class Snakes:
         # cur_move must be updated before head_set for head progress
         # Also before draw_pre_move so nr moves will be correct
         self._cur_move += 1
-        display.draw_move(self._all_windows, x, y,
-                          is_collision, self.head_x(), self.head_y(),
-                          eat, tail_pos_x, tail_pos_y,
+        display.draw_move(self._all_windows, self.yx(pos[self._all_windows]),
+                          is_collision, self.yx(self.head()[self._all_windows]),
+                          eat, self.yx(tail_pos[self._all_windows]),
                           self._cur_move - self._nr_moves[self._all_windows])
-        self.head_set(x, y)
+        self.head_set(pos)
 
         eaten = eat.nonzero()[0]
         if eaten.size:
             self._score_total_snakes += eaten.size - collided.size
             self.new_apples(eaten)
             w_index = eat[self._all_windows].nonzero()[0]
-            display.draw_apples(self._all_windows, w_index, self._apple_x, self._apple_y, self._body_length)
-            i0 = self._all_windows[0]
-            if eat[i0]:
-                print(np.array(self._field0[i0], dtype=np.uint8))
+            if w_index.size:
+                i_index = self._all_windows[w_index]
+                display.draw_apples(i_index, w_index,
+                                    self.yx(self._apple[i_index]),
+                                    self._body_length)
+                #i0 = self._all_windows[0]
+                #if eat[i0]:
+                #    print(np.array(self._field0[i0], dtype=np.uint8))
 
         # print(self.view_string())
 
-        # print("Field\n", self._field1)
-        #print("body_x", self._snake_body_x)
-        #print("body_y", self._snake_body_y)
-        # print("body")
-        # print(np.dstack((self._snake_body_x, self._snake_body_y)))
-        # print("Head")
-        # print(np.dstack((self.head_x(), self.head_y())))
-        # print("Apple")
-        # print(np.dstack((self._apple_x, self._apple_y)))
+        # print_yx("body", self.yx(self._snake_body))
+        # print_yx("Head", self.yx(self.head()))
+        # print_yx("Apple", self.yx(self._apple))
         # print("-------------------")
 
     def move_select(self):
         # return self.plan_random_unblocked(self._all_snakes)
         # return self.plan_random()
-        x, y = self.plan_greedy()
-        collided = self._field1[self._all_snakes, y, x].nonzero()[0]
+        pos = self.plan_greedy()
+        collided = self._field[self._all_snakes, pos].nonzero()[0]
         # print("Greedy Collided", collided)
         if collided.size:
-            rand_x, rand_y = self.plan_random_unblocked(collided)
-            x[collided] = rand_x
-            y[collided] = rand_y
-        # print("Move")
-        # print(np.dstack((x, y)))
-        return x, y
+            pos[collided] = self.plan_random_unblocked(collided)
+        # print_xy("Move", x, y))
+        return pos
 
     # Do whatever needs to be done after moving the snake
     # In this case we dislay the current state and wait for a bit
@@ -979,7 +985,6 @@ class Snakes:
         if self.nr_games_total():
             display.draw_text(0, "score_per_game",  self.score_per_game())
             display.draw_text(0, "moves_per_game",  self.nr_moves_per_game())
-            display.draw_text(0, "moves_per_apple", self.nr_moves_per_apple())
         if self.score_total_games():
             display.draw_text(0, "moves_per_apple", self.nr_moves_per_apple())
 
@@ -1016,20 +1021,23 @@ class Snakes:
         self._field0.fill(0)
         self._nr_moves.fill(self._cur_move)
         self._body_length.fill(0)
-        head_x = self.rand_x(self.nr_snakes())
-        head_y = self.rand_y(self.nr_snakes())
-        self.head_set(head_x, head_y)
+        # print("Initial heads")
+        head = self.rand(self.nr_snakes())
+        self.head_set(head)
         self.new_apples(self._all_snakes)
 
+        w_head_y, w_head_x = self.yx(head[self._all_windows])
+        # print_xy("Initial head:", w_head_x, w_head_y))
         for w in range(nr_windows):
             i = self._all_windows[w]
             display.draw_text(w, "moves", 0)
             display.draw_text(w, "game", 0)
             display.draw_text(w, "snake", i)
             display.draw_field_empty(w)
-            display.draw_block(w, head_x[i], head_y[i], Display.HEAD)
+            display.draw_block(w, w_head_x[w], w_head_y[w], Display.HEAD)
         display.draw_apples(self._all_windows, range(nr_windows),
-                            self._apple_x, self._apple_y, self._body_length)
+                            self.yx(self._apple[self._all_windows]),
+                            self._body_length)
 
         self._stepping = stepping
         self._paused = 0
@@ -1148,9 +1156,9 @@ class Snakes:
             if not self.move_finish(display):
                 self.run_finish()
                 return
-            x, y = self.move_select()
-            is_collision, collided = self.move_collisions(display, x, y)
-            self.move_execute(display, x, y, is_collision, collided)
+            pos = self.move_select()
+            is_collision, collided = self.move_collisions(display, pos)
+            self.move_execute(display, pos, is_collision, collided)
 
 # +
 if arguments["--benchmark"]:
