@@ -20,6 +20,7 @@ Usage:
   snake.py [-f <file>] [--snakes=<snakes>] [--stepping] [--fps=<fps>]
            [--width=<width>] [--height=<height>] [--frames=<frames>]
            [--columns=columns] [--rows=rows] [--block=<block_size>]
+  snake.py --benchmark
   snake.py (-h | --help)
   snake..py --version
 
@@ -36,6 +37,7 @@ Options:
   --columns=<columns>   Columns of pits to display [default: 2]
   --rows=<rows>         Rows of pits to display [default: 1]
   --frames=<frames>     Stop automatically at this frames number [Default: -1]
+  --benchmark           Run a simple speed benchmark
   -f <file>:            Used by jupyter, ignored
 
 Display key actions:
@@ -70,6 +72,7 @@ import numpy as np
 
 import os
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
+import sys
 import pygame
 import pygame.freetype
 from pygame.locals import *
@@ -204,9 +207,9 @@ class Display:
     # You can only have one pygame instance in one process,
     # so make display related variables into class variables
     def __init__(self, snakes,
-                 columns    = DEFAULTS["--columns"],
-                 rows       = DEFAULTS["--rows"],
-                 block_size = DEFAULTS["--block"],
+                 columns    = int(DEFAULTS["--columns"]),
+                 rows       = int(DEFAULTS["--rows"]),
+                 block_size = int(DEFAULTS["--block"]),
                  caption="Snakes", slow_updates=0):
         self.windows = rows*columns
         if not self.windows:
@@ -482,6 +485,7 @@ class Display:
 
 
 # +
+"""
 import tensorflow as tf
 
 class ProbabilityDistribution(tf.keras.Model):
@@ -527,6 +531,7 @@ class ActorCriticModel(tf.keras.Model):
         return action, value
 
 3
+"""
 
 # -
 
@@ -572,9 +577,9 @@ class Snakes:
     DIRECTION_Y = np.array([d[1] for d in DIRECTIONS], dtype=TYPE_POS)
 
     def __init__(self, nr_snakes=1,
-                 width     = DEFAULTS["--width"],
-                 height    = DEFAULTS["--height"],
-                 frame_max = DEFAULTS["--frames"],
+                 width     = int(DEFAULTS["--width"]),
+                 height    = int(DEFAULTS["--height"]),
+                 frame_max = int(DEFAULTS["--frames"]),
                  view_x=0, view_y=0):
         if nr_snakes <= 0:
             raise(ValueError("Number of snakes must be positive"))
@@ -973,7 +978,7 @@ class Snakes:
 
     # Setup initial variables for moving snakes
     def run_start(self, display,
-                  fps      = DEFAULTS["--fps"],
+                  fps      = int(DEFAULTS["--fps"]),
                   stepping = DEFAULTS["--stepping"]):
         nr_windows = min(self.nr_snakes(), display.windows)
         self._all_windows = np.arange(nr_windows-1, -1, -1, dtype=TYPE_INDEX)
@@ -1134,6 +1139,24 @@ class Snakes:
             x, y = self.move_select()
             is_collision, collided = self.move_collisions(display, x, y)
             self.move_execute(display, x, y, is_collision, collided)
+
+# +
+if arguments["--benchmark"]:
+    speed = 0
+    for i in range(1):
+        np.random.seed(1)
+        snakes = Snakes(nr_snakes = 100000,
+                        width     = 40,
+                        height    = 40,
+                        frame_max = 1000)
+        with Display(snakes, rows=0) as display:
+            while snakes.draw_run(display,
+                                  fps=0,
+                                  stepping=False):
+                pass
+            speed = max(speed, snakes.frame() * snakes.nr_snakes() / snakes.elapsed())
+    print("%.0f" % speed)
+    sys.exit()
 
 # +
 columns    = int(arguments["--columns"])

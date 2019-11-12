@@ -1,0 +1,30 @@
+#!/bin/sh
+set -e
+export PYTHONHASHSEED=1
+file="snake.py"
+if test "$1" = "--git"; then
+    git show "HEAD:$file" > "snake.py.git"
+    file="snake.py.git"
+fi
+# speed=`taskset -c 1 python snake.py --benchmark`
+speed=`python -- "$file" --benchmark`
+echo $out
+if test "$1" = "--git"; then
+    host=`hostname`
+    tagname="bench-$host=$speed"
+    for name in `git tag -l "bench-$host=*"`; do
+        echo Deleting tag $name
+        set +e
+        git push origin --delete -- "$name"
+        set -e
+        git tag -d -- "$name"
+    done
+
+    echo Adding tag $tagname
+    git tag "$tagname"
+    set +e
+    git push origin -- "$tagname"
+    set -e
+
+    rm -f -- "$file"
+fi
