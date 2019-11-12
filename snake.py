@@ -171,7 +171,7 @@ ROW_BOTTOM = [
     TextField("score_max",   "Max Score:", 4),
     TextField("moves_max",   "Max Moves:", 7),
     TextField("game_max",    "Max Game:",  5),
-    TextField("score_per_snake", "Score/Snake:", 4),
+#   TextField("score_per_snake", "Score/Snake:", 4),
     TextField("score_per_game",  "Score/Game:",  4),
     TextField("moves_per_game",  "Moves/Game:",  7),
     TextField("moves_per_apple", "Moves/Apple:", 4),
@@ -581,15 +581,27 @@ class Snakes:
     WAIT_MIN = 1/1000
 
     # Possible directions for a random walk
-    DIRECTIONS0 = np.array([[1,0],[-1,0],[0,1],[0,-1]])
+    ROTATION = np.array([[0,1],[-1,0]], dtype=TYPE_POS)
+    # In python 3.8 we will get the ability to use "initial" so the
+    # awkward "append" can be avoided
+    ROTATIONS = np.array(list(itertools.accumulate(
+        np.append(np.expand_dims(np.identity(2), axis=0),
+                  np.expand_dims(ROTATION, axis=0).repeat(3,axis=0), axis=0),
+        np.matmul)), dtype=TYPE_POS)
+    # Next will set DIRECTIONS0 to all directions:
+    # [[ 1  0]
+    #  [ 0 -1]
+    #  [-1  0]
+    #  [ 0  1]]
+    DIRECTIONS0 = np.matmul(ROTATIONS, np.array([1,0], dtype=TYPE_POS))
     DIRECTIONS0_X = DIRECTIONS0[:,0]
     DIRECTIONS0_Y = DIRECTIONS0[:,1]
     NR_DIRECTIONS = len(DIRECTIONS0)
 
-    DIRECTION_PERMUTATIONS0 = np.array(list(itertools.permutations(DIRECTIONS0)), dtype=TYPE_POS)
+    DIRECTION_PERMUTATIONS0   = np.array(list(itertools.permutations(DIRECTIONS0)), dtype=TYPE_POS)
     NR_DIRECTION_PERMUTATIONS = len(DIRECTION_PERMUTATIONS0)
-    DIRECTION_PERMUTATIONS0_X=DIRECTION_PERMUTATIONS0[:,:,0]
-    DIRECTION_PERMUTATIONS0_Y=DIRECTION_PERMUTATIONS0[:,:,1]
+    DIRECTION_PERMUTATIONS0_X = DIRECTION_PERMUTATIONS0[:,:,0]
+    DIRECTION_PERMUTATIONS0_Y = DIRECTION_PERMUTATIONS0[:,:,1]
 
     def __init__(self, nr_snakes=1,
                  width     = int(DEFAULTS["--width"]),
@@ -620,6 +632,14 @@ class Snakes:
         self.DIRECTIONS = Snakes.DIRECTIONS0_X + Snakes.DIRECTIONS0_Y * self.WIDTH1
         self.DIRECTION_PERMUTATIONS = Snakes.DIRECTION_PERMUTATIONS0_X + Snakes.DIRECTION_PERMUTATIONS0_Y * self.WIDTH1
 
+        # Table of all positions inside the pit
+        x0 = np.arange(self.VIEW_X, self.VIEW_X+self.WIDTH,  dtype=TYPE_POS)
+        y0 = np.arange(self.VIEW_Y, self.VIEW_Y+self.HEIGHT, dtype=TYPE_POS)
+        all0 = x0 + y0.reshape(self.HEIGHT,1) * self.WIDTH1
+        # print_yx("All", self.yx(all0))
+        self._all0 = all0.flatten()
+        # print_yx("All", self.yx(self._all0))
+
         # Pit is just the edges
         self._empty_pit = np.ones((self.HEIGHT1, self.WIDTH1), dtype=TYPE_FLAG)
         self._empty_pit[self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH] = 0
@@ -647,13 +667,20 @@ class Snakes:
         self._nr_moves = np_empty(nr_snakes, TYPE_MOVES)
         self._nr_games = np_empty(nr_snakes, TYPE_GAMES)
 
-    def rand(self, nr):
+    def rand_x(self, nr):
         offset_x = self.VIEW_X
-        rand_x = np.random.randint(offset_x, offset_x+self.WIDTH,  size=nr, dtype=TYPE_POS)
+        return np.random.randint(offset_x, offset_x+self.WIDTH,  size=nr, dtype=TYPE_POS)
+
+    def rand_y(self, nr):
         offset_y = self.VIEW_Y
-        rand_y = np.random.randint(offset_y, offset_y+self.HEIGHT, size=nr, dtype=TYPE_POS)
-        # print("Rand:", self.WIDTH1)
-        # print(np.dstack((rand_x, rand_y)))
+        return np.random.randint(offset_y, offset_y+self.HEIGHT, size=nr, dtype=TYPE_POS)
+
+    def rand(self, nr):
+        # Use lookup table
+        return self._all0[np.random.randint(self._all0.size, size=nr, dtype=TYPE_POS)]
+        # Or combine rand_x and rand_y
+        rand_x = self.rand_x(nr)
+        rand_y = self.rand_y(nr)
         return rand_x + rand_y * self.WIDTH1
 
     def nr_snakes(self):
@@ -976,7 +1003,7 @@ class Snakes:
 
         # draw_text is optimized to not draw any value that didn't change
         display.draw_text(0, "step", frame)
-        display.draw_text(0, "score_per_snake", self.score_total_snakes() / self._nr_snakes)
+        # display.draw_text(0, "score_per_snake", self.score_total_snakes() / self._nr_snakes)
         display.draw_text(0, "score_max", self.score_max())
         display.draw_text(0, "moves_max", self.nr_moves_max())
         display.draw_text(0, "game_max",  self.nr_games_max())
