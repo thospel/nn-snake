@@ -607,9 +607,18 @@ class Snakes:
                  width     = int(DEFAULTS["--width"]),
                  height    = int(DEFAULTS["--height"]),
                  frame_max = int(DEFAULTS["--frames"]),
-                 view_x=0, view_y=0):
+                 view_x=VIEW_X0, view_y=VIEW_Y0,
+                 xy_debug=False, xy_apple=True, xy_head=True):
         if nr_snakes <= 0:
             raise(ValueError("Number of snakes must be positive"))
+
+        self._xy_debug = xy_debug
+        # Do we keep a cache of apple coordinates ?
+        # This helps if e.g. we need the coordinates on every move decission
+        self._xy_apple = xy_apple
+        # xy_head is currently a hack and not implemented for all planners
+        # Check by turning _xy_debug on for a bit
+        self._xy_head  = xy_head
 
         self.windows = None
 
@@ -617,8 +626,12 @@ class Snakes:
         self._all_snakes = np.arange(nr_snakes, dtype=TYPE_INDEX)
         self._frame_max = frame_max
 
-        self.VIEW_X = view_x or VIEW_X0
-        self.VIEW_Y = view_y or VIEW_Y0
+        if view_x < 1:
+            raise(AssertionError("view_x must be positive to provide an edge"))
+        if view_y < 1:
+            raise(AssertionError("view_y must be positive to provide an edge"))
+        self.VIEW_X = view_x
+        self.VIEW_Y = view_y
         self.WIDTH  = width
         self.HEIGHT = height
         self.AREA   = self.WIDTH * self.HEIGHT
@@ -662,8 +675,12 @@ class Snakes:
         # Body length measures the snake *without* the head
         # This is therefore also the score (if we start with length 0 snakes)
         self._body_length = np_empty(nr_snakes, TYPE_INDEX)
-        self._head     = np_empty(nr_snakes, TYPE_POS)
+        # Don't need to pre-allocate _head.
+        # run_start will implicitely create it
         self._apple    = np_empty(nr_snakes, TYPE_POS)
+        if self._xy_apple:
+            self._apple_x  = np_empty(nr_snakes, TYPE_POS)
+            self._apple_y  = np_empty(nr_snakes, TYPE_POS)
         self._nr_moves = np_empty(nr_snakes, TYPE_MOVES)
         self._nr_games = np_empty(nr_snakes, TYPE_GAMES)
 
@@ -737,6 +754,12 @@ class Snakes:
     def nr_games_total(self):
         return self._nr_games_total
 
+    def head_x(self):
+        return self._head_x
+
+    def head_y(self):
+        return self._head_y
+
     def head(self):
         return self._head
 
@@ -744,6 +767,8 @@ class Snakes:
         self._head = head_new
         offset = self._cur_move & self.MASK
         self._snake_body[self._all_snakes, offset] = head_new
+        # print_xy("Head coordinates", self._head_x, self._head_y)
+        # print(head_new)
         self._field[self._all_snakes, head_new] = 1
 
     def tail_set(self, values):
@@ -796,27 +821,48 @@ class Snakes:
         return y, x
 
     # Sprinkle new apples in all pits where the snake ate them (todo)
+    # On a 40x40 pit with the greedy algorithm about 3.5% of snakes need apples
     def new_apples(self, todo):
         too_large = self._body_length[todo] >= self.AREA-1
         if too_large.any():
             raise(AssertionError("No place for apples"))
 
+        # print("New apples", todo.size)
         # print("New apples", todo)
         # old_todo = todo.copy()
+        # Simple retry strategy. Will get slow once a snake grows very large
+        old_todo = todo
         while todo.size:
+            # rand_x = self.rand_x(todo.size)
+            # rand_y = self.rand_y(todo.size)
             rand = self.rand(todo.size)
-            self._apple[todo] = rand
+            # rand = rand_x + rand_y * self.WIDTH1
+            # self._apple_x[todo] = rand_x
+            # self._apple_y[todo] = rand_y
+            self._apple  [todo] = rand
             fail = self._field[todo, rand]
             # Index with boolean is grep
             todo = todo[fail != 0]
             # print("New apples todo", todo)
+            # print("Still need", todo.size)
+        if self._xy_apple:
+            self._apple_y[old_todo], self._apple_x[old_todo] = self.yx(self._apple[old_todo])
         # print_yx("Placed apples", self.yx(self._apple[old_todo]))
 
     # Plot the shortest course to the apple completely ignoring any snake body
     def plan_greedy(self):
-        head = self.head()
-        y, x             = self.yx(head)
-        apple_y, apple_x = self.yx(self._apple)
+        if self._xy_head:
+            x = self.head_x()
+            y = self.head_y()
+        else:
+            head = self.head()
+            y, x = self.yx(head)
+
+        if self._xy_apple:
+            apple_x = self._apple_x
+            apple_y = self._apple_y
+        else:
+            apple_y, apple_x = self.yx(self._apple)
 
         # print_xy("Greedy Heads:", x, y))
         # print_xy("Apples:", apple_x, apple_y))
@@ -834,8 +880,14 @@ class Snakes:
         diag = dx == dy
         if np.count_nonzero(diag):
             raise(AssertionError("Impossible apple direction"))
-        delta = dx + dy * self.WIDTH1
-        return head+delta
+        if self._xy_head:
+            # This updates self._head_x since x IS self._head_x. same for y
+            x += dx
+            y += dy
+            return x + y * self.WIDTH1
+        else:
+            delta = dx + dy * self.WIDTH1
+            return head+delta
 
     # Pick a completely random direction
     def plan_random(self):
@@ -941,7 +993,14 @@ class Snakes:
 
             self._body_length[collided]  = 0
             # print("New Heads after collision")
-            pos[collided] = self.rand(collided.size)
+            if self._xy_head:
+                head_x = self.rand_x(collided.size)
+                head_y = self.rand_y(collided.size)
+                self._head_x[collided] = head_x
+                self._head_y[collided] = head_y
+                pos[collided] = head_x + head_y * self.WIDTH1
+            else:
+                pos[collided] = self.rand(collided.size)
         return is_collision, collided
 
     def move_execute(self, display, pos, is_collision, collided):
@@ -982,13 +1041,32 @@ class Snakes:
         # print("-------------------")
 
     def move_select(self):
+        if self._xy_debug:
+            if self._xy_apple:
+                y, x = self.yx(self._apple)
+                if not np.array_equal(x, self._apple_x):
+                    raise(AssertionError("Bad apple"))
+                if not np.array_equal(y, self._apple_y):
+                    raise(AssertionError("Bad apple"))
+            if self._xy_head:
+                y, x = self.yx(self._head)
+                if not np.array_equal(x, self._head_x):
+                    raise(AssertionError("Bad head"))
+                if not np.array_equal(y, self._head_y):
+                    raise(AssertionError("Bad head"))
+
         # return self.plan_random_unblocked(self._all_snakes)
         # return self.plan_random()
         pos = self.plan_greedy()
         collided = self._field[self._all_snakes, pos].nonzero()[0]
         # print("Greedy Collided", collided)
         if collided.size:
-            pos[collided] = self.plan_random_unblocked(collided)
+            pos_new = self.plan_random_unblocked(collided)
+            if self._xy_head:
+                y, x = self.yx(pos_new)
+                self._head_x[collided] = x
+                self._head_y[collided] = y
+            pos[collided] = pos_new
         # print_xy("Move", x, y))
         return pos
 
@@ -1049,7 +1127,12 @@ class Snakes:
         self._nr_moves.fill(self._cur_move)
         self._body_length.fill(0)
         # print("Initial heads")
-        head = self.rand(self.nr_snakes())
+        if self._xy_head:
+            self._head_x = self.rand_x(self.nr_snakes())
+            self._head_y = self.rand_y(self.nr_snakes())
+            head = self._head_x + self._head_y * self.WIDTH1
+        else:
+            head = self.rand(self.nr_snakes())
         self.head_set(head)
         self.new_apples(self._all_snakes)
 
