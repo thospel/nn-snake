@@ -2,7 +2,7 @@
 """benchmark
 
 Usage:
-  snake.py [-n <loops>] [--git] [<file>]
+  snake.py [-n <loops>] [--git] [--tag] [--push] [<file>]
   snake.py (-h | --help)
   snake..py --version
 
@@ -11,7 +11,9 @@ Options:
   --version             Show version
 
   --git                 Get code from git and run that
-  -n --loops <loops>            Number of benchmark runs [Default: 1]
+  --tag                 Add a tag with the result to git (implies --git)
+  --push                Push result tag to remote (implies --tag)
+  -n --loops <loops>    Number of benchmark runs [Default: 1]
   <file>                Which file to run
 """
 from docopt import docopt
@@ -50,7 +52,12 @@ def run(*cmd, output_mandatory=True, **kwargs):
         error("No output from %s" % cmd_str)
     return out
 
-def benchmark(file, git, loops):
+def benchmark(file, loops=1, git=False, tag=False, push=False):
+    if push:
+        tag = True
+    if tag:
+        git = True
+
     tmp_file = "%s.git" % file
     if git:
         out = run("git", "show", "HEAD:" + file)
@@ -70,7 +77,7 @@ def benchmark(file, git, loops):
     if loops > 1:
         print("Best speed: %d steps/sec" % speed)
 
-    if git:
+    if tag:
         hostname = platform.node()
         prefix = "bench-" + hostname + "="
         matcher = r"%s(\d+)" % re.escape(prefix)
@@ -95,14 +102,16 @@ def benchmark(file, git, loops):
 
         if delete:
             print("deleting tags", delete)
-            run("git", "push", "origin", "--delete", *delete,
-                output_mandatory = False)
+            if push:
+                run("git", "push", "origin", "--delete", *delete,
+                    output_mandatory = False)
             run("git", "tag", "-d", *delete)
         if keep is None:
             tag = prefix + str(speed)
             print("Setting tag", tag)
             run("git", "tag", tag)
-            run("git", "push", "origin", tag)
+            if push:
+                run("git", "push", "origin", tag)
         else:
             print("Keeping tag", keep)
 
@@ -115,4 +124,8 @@ if __name__ == '__main__':
     file = arguments["<file>"]
     if file is None:
        file = "snake.py"
-    benchmark(file, git=arguments["--git"], loops=int(arguments["--loops"]))
+    benchmark(file,
+              git=arguments["--git"],
+              tag=arguments["--tag"],
+              push=arguments["--push"],
+              loops=int(arguments["--loops"]))
