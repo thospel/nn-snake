@@ -1,0 +1,6 @@
+# Snake sees all in 5x5 except the corners
+  *   *
+  * * * *
+* * O * *
+* * * * *
+  * * *

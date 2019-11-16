@@ -20,6 +20,7 @@ Usage:
   snake.py [-f <file>] [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
            [--width=<width>] [--height=<height>] [--frames=<frames>]
            [--columns=columns] [--rows=rows] [--block=<block_size>]
+           [--vision-file=<file>]
   snake.py --benchmark
   snake.py (-h | --help)
   snake..py --version
@@ -38,6 +39,7 @@ Options:
   --rows=<rows>         Rows of pits to display [default: 1]
   --frames=<frames>     Stop automatically at this frames number [Default: -1]
   --benchmark           Run a simple speed benchmark
+  --vision-file=<file>  Read snake vision from file
   --debug               Run debug code
   -f <file>:            Used by jupyter, ignored
 
@@ -58,6 +60,10 @@ DEFAULTS = docopt(__doc__, [])
 
 if __name__ == '__main__':
     arguments = docopt(__doc__, version='Snake 1.0')
+    if arguments["--debug"]:
+        print(arguments)
+
+# For jupyter
 arguments
 # -
 
@@ -65,10 +71,11 @@ arguments
 from matplotlib import pyplot as plt
 
 from dataclasses import dataclass
-from typing import List
+from typing import List,Dict
 import random
 import math
 import itertools
+import collections.abc
 import time
 import numpy as np
 
@@ -214,7 +221,7 @@ class Display:
                  rows       = int(DEFAULTS["--rows"]),
                  columns    = int(DEFAULTS["--columns"]),
                  block_size = int(DEFAULTS["--block"]),
-                 caption="Snakes", slow_updates=0):
+                 caption="Snakes", slow_updates = 0):
         self.rows    = rows
         self.columns = columns
         self.windows = rows*columns
@@ -563,6 +570,16 @@ def print_yx(text, pos):
 
 
 # -
+# TYPE_POS = np.uint8
+TYPE_POS   = np.int16
+TYPE_BOOL  = np.bool
+TYPE_INDEX = np.intp
+# Using bool for TYPE_FLAG is about 5% faster
+# TYPE_FLAG  = np.uint8
+TYPE_FLAG  = np.bool
+TYPE_SCORE = np.uint32
+TYPE_MOVES = np.uint32
+TYPE_GAMES = np.uint32
 
 # Parse drawings like:
 #      #
@@ -575,37 +592,106 @@ def print_yx(text, pos):
 #  1  0
 #  0  1
 
-def parse_vision(str):
-    head = None
-    see = []
-    x = -1
-    y = 0
-    for c in str:
-        x += 1
-        if c == " ":
-            pass
-        elif c == "#":
-            see.append([x, y])
-        elif c == "O":
-            if head is not None:
-                raise(AssertionError("Multiple heads in vision string"))
-            head = [x, y]
-        elif c == "\n":
-            y += 1
-            x = -1
-    if head is None:
-        raise(AssertionError("No heads in vision string"))
-    out_x = np_empty((len(see)), TYPE_POS)
-    out_y = np_empty((len(see)), TYPE_POS)
-    for i, s in enumerate(see):
-        x = s[0] - head[0]
-        y = s[1] - head[1]
-        if x % 2 != 0:
-            raise(AssertionError("Field has odd distance from head"))
-        out_x[i] = x/2
-        out_y[i] = y
-    return out_y, out_x
+@dataclass
+class Vision(dict):
+    x:     np.ndarray
+    y:     np.ndarray
+    min_x: TYPE_POS
+    max_x: TYPE_POS
+    min_y: TYPE_POS
+    max_y: TYPE_POS
 
+    def __init__(self, str):
+        super().__init__()
+        head_x = None
+        head_y = None
+        see_x = []
+        see_y = []
+        x = -1
+        y = 0
+        comment = False
+        for ch in str:
+            x += 1
+            if comment:
+                if ch != "\n":
+                    continue
+                comment = False
+
+            if ch == " ":
+                pass
+            elif ch == "*":
+                see_x.append(x)
+                see_y.append(y)
+            elif ch == "O":
+                if head_x is not None:
+                    raise(ValueError("Multiple heads in vision string"))
+                head_x = x
+                head_y = y
+            elif ch == "\n":
+                y += 1
+                x = -1
+            elif ch == "#":
+                comment = True
+                if x == 0:
+                    y -= 1
+            else:
+                raise(ValueError("Unknown character '%s'" % ch))
+
+        if head_x is None:
+            raise(ValueError("No heads in vision string"))
+
+        vision_x = np.array(see_x, TYPE_POS)
+        vision_y = np.array(see_y, TYPE_POS)
+        vision_x -= head_x
+        vision_y -= head_y
+        odd_x = vision_x % 2
+        if odd_x.any():
+            raise(ValueError("Field has odd distance from head"))
+        vision_x //= 2
+
+        self.x = vision_x
+        self.y = vision_y
+
+        self.min_x = np.amin(vision_x)
+        self.max_x = np.amax(vision_x)
+        self.min_y = np.amin(vision_y)
+        self.max_y = np.amax(vision_y)
+
+        for i,(x,y) in enumerate(zip(np.nditer(vision_x), np.nditer(vision_y))):
+            self[y+0, x+0] = i
+
+
+    def string(self, final_newline = True, flags = None):
+        str = ""
+        for y in range(self.min_y, self.max_y + 1):
+            if y != self.min_y:
+                str += "\n"
+            spaces = ""
+            for x in range(self.min_x, self.max_x+1):
+                if x == 0 and y == 0:
+                    if flags is None:
+                        str += spaces + "O"
+                    else:
+                        str += spaces + "#"
+                elif (y, x) in self:
+                    str += spaces
+                    if flags is None:
+                        str += "*"
+                    elif flags[self[y, x]]:
+                        str += "1"
+                    else:
+                        str += "0"
+                    spaces = " "
+                else:
+                    spaces += "  "
+        if final_newline:
+            str += "\n";
+        return str
+
+class VisionFile(Vision):
+    def __init__(self, file):
+        with open(file) as fh:
+            super().__init__(fh.read())
 
 # +
 @dataclass
@@ -624,24 +710,6 @@ class MoveResult:
 
 
 # +
-# TYPE_POS = np.uint8
-TYPE_POS   = np.int16
-TYPE_BOOL  = np.bool
-TYPE_INDEX = np.intp
-# Using bool for TYPE_FLAG is about 5% faster
-# TYPE_FLAG  = np.uint8
-TYPE_FLAG  = np.bool
-TYPE_SCORE = np.uint32
-TYPE_MOVES = np.uint32
-TYPE_GAMES = np.uint32
-
-VIEW_X0 = 1
-VIEW_Y0 = 1
-VIEW_X2 = VIEW_X0+2
-VIEW_Y2 = VIEW_Y0+2
-VIEW_WIDTH  = 2*VIEW_X0+1
-VIEW_HEIGHT = 2*VIEW_Y0+1
-
 class Snakes:
     # Event polling time in paused mode.
     # Avoid too much CPU waste or even a busy loop in case fps == 0
@@ -684,9 +752,22 @@ class Snakes:
     # 6 3 7          1 4 5
     # DIRECTION8_ID = np.array([[8, 0, 2], [3, 7, 6], [1, 4, 5]], dtype=np.uint8)
     DIRECTION8_ID = np.empty((3,3), dtype=np.uint8)
-    DIRECTION8_ID[DIRECTIONS0_Y,DIRECTIONS0_X] = range(4)
-    DIRECTION8_ID[DIAGONALS0_Y,DIAGONALS0_X] = range(4, 8)
-    DIRECTION8_ID[0][0] = 8
+    DIRECTION8_X = np.empty(DIRECTION8_ID.size, dtype=TYPE_POS)
+    DIRECTION8_Y = np.empty(DIRECTION8_ID.size, dtype=TYPE_POS)
+    DIRECTION8_X[0:4] = DIRECTIONS0_X
+    DIRECTION8_Y[0:4] = DIRECTIONS0_Y
+    DIRECTION8_X[4:8] = DIAGONALS0_X
+    DIRECTION8_Y[4:8] = DIAGONALS0_Y
+    DIRECTION8_X[8]   = 0
+    DIRECTION8_Y[8]   = 0
+    DIRECTION8_ID[DIRECTION8_Y, DIRECTION8_X] = np.arange(DIRECTION8_ID.size)
+
+    VIEW_X0 = 1
+    VIEW_Y0 = 1
+    VIEW_X2 = VIEW_X0+2
+    VIEW_Y2 = VIEW_Y0+2
+    VIEW_WIDTH  = 2*VIEW_X0+1
+    VIEW_HEIGHT = 2*VIEW_Y0+1
 
     def pos_from_yx(self, y, x):
         return x + y * self.WIDTH1
@@ -698,7 +779,7 @@ class Snakes:
                  width     = int(DEFAULTS["--width"]),
                  height    = int(DEFAULTS["--height"]),
                  frame_max = int(DEFAULTS["--frames"]),
-                 view_x=VIEW_X0, view_y=VIEW_Y0,
+                 view_x = None, view_y = None,
                  debug = False, xy_apple = True, xy_head = True):
         if nr_snakes <= 0:
             raise(ValueError("Number of snakes must be positive"))
@@ -717,10 +798,14 @@ class Snakes:
         self._all_snakes = np.arange(nr_snakes, dtype=TYPE_INDEX)
         self._frame_max = frame_max
 
+        if view_x is None:
+            view_x = VIEW_X0
+        if view_y is None:
+            view_y = VIEW_Y0
         if view_x < 1:
-            raise(AssertionError("view_x must be positive to provide an edge"))
+            raise(ValueError("view_x must be positive to provide an edge"))
         if view_y < 1:
-            raise(AssertionError("view_y must be positive to provide an edge"))
+            raise(ValueError("view_y must be positive to provide an edge"))
         self.VIEW_X = view_x
         self.VIEW_Y = view_y
 
@@ -730,7 +815,7 @@ class Snakes:
         if self.AREA < 2:
             # Making area 1 work is too much bother since you immediately win
             # So you never get to move which is awkward for this implementation
-            raise(AssertionError("No space to put both head and apple"))
+            raise(ValueError("No space to put both head and apple"))
         # First power of 2 greater or equal to AREA for fast modular arithmetic
         self.AREA2 = 1 << (self.AREA-1).bit_length()
         self.MASK  = self.AREA2 - 1
@@ -1239,11 +1324,9 @@ class Snakes:
         # self.print_pos("Move", pos)
         return pos
 
-    # Do whatever needs to be done after moving the snake
-    # In this case we dislay the current state and wait for a bit
-    # while handling events
+    # Dislay the current state and wait for a bit while handling events
     # Return True if you want to continue running
-    def move_finish(self, display):
+    def move_show(self, display, pos):
         frame = self.frame()
         if frame == self._frame_max:
             return False
@@ -1456,15 +1539,20 @@ class Snakes:
         move_result = self.run_start_results()
         self.run_timers(display)
         while True:
-            if not self.move_finish(display):
-                self.run_finish()
-                return
-            if self._debug:
-                self.move_debug()
+            # Decide what we will do before showing the current state
+            # This allows us to show the current plan.
+            # It also makes debug messages during planning less confusing
+            # since screen output represents the state during planning
             pos = self.move_select(display, move_result)
             # Forgetting to return is an easy bug leading to confusing errors
             if pos is None:
                 raise(AssertionError("pos is None"))
+
+            if not self.move_show(display, pos):
+                self.run_finish()
+                return
+            if self._debug:
+                self.move_debug()
 
             move_result = self.move_evaluate(pos)
             # Initial move_result has no "eaten"
@@ -1489,7 +1577,8 @@ class SnakesRandomUnblocked(Snakes):
 
 
 class SnakesQ(Snakes):
-    TYPE_FLOAT = np.float32
+    TYPE_FLOAT    = np.float32
+    TYPE_QTABLE   = np.uint32
     DISCOUNT      = 0.99
     LEARNING_RATE = 0.1
     EPSILON_INV   = 1000
@@ -1500,38 +1589,62 @@ class SnakesQ(Snakes):
     # Small random disturbance to escape from loops
     REWARD_RAND   =  0.001
     # Prefill to encourage early exploration
-    REWARD0       = 0.01
+    REWARD0       = TYPE_FLOAT(0.01)
     LOOP_MAX      = 100
     LOOP_ESCAPE   = LOOP_MAX
 
-    VISION_Y, VISION_X = parse_vision("""
-
-      #
-    # O #
-      #
-
+    VISION        = Vision("""
+      *
+    * O *
+      *
     """)
-    # We will use packbits on the resulting lookup, so only up to 8 bits
-    if len(VISION_X) > 8:
-        raise(AssertionError("Too many vision elements"))
     NR_STATES_APPLE = 8
-    NR_STATES_NEIGHBOUR = 2 ** len(VISION_X)
-    NR_STATES = NR_STATES_APPLE * NR_STATES_NEIGHBOUR
+    NR_STATES_MAX = np.iinfo(TYPE_QTABLE).max
 
-    def __init__(self, *args, xy_head=False, **kwargs):
-        super().__init__(*args, xy_head=False, **kwargs)
-        self._q_table = np.empty((SnakesQ.NR_STATES,
+    def __init__(self, *args,
+                 view_x = None, view_y = None,
+                 xy_head = False,
+                 vision = VISION,
+                 **kwargs):
+        if view_x is None:
+            view_x = max(Snakes.VIEW_X0, -np.amin(vision.x), np.amax(vision.x))
+        if view_y is None:
+            view_y = max(Snakes.VIEW_Y0, -np.amin(vision.y), np.amax(vision.y))
+
+        nr_neighbours = len(vision)
+        if nr_neighbours <= 0:
+            raise(AssertionError("Your snake is blind"))
+        self.NR_STATES_NEIGHBOUR = 2 ** nr_neighbours
+        self.NR_STATES = SnakesQ.NR_STATES_APPLE * self.NR_STATES_NEIGHBOUR
+        if self.NR_STATES > SnakesQ.NR_STATES_MAX:
+            raise(ValueError("Number of states too high for Q table index type"))
+        print("Q table has", self.NR_STATES, "states")
+        print("Snake Vision:")
+        print(vision.string(final_newline = False))
+        # The previous test made sure this won't overflow
+        self.neighbour_multiplier = np.expand_dims(1 << np.arange(0, nr_neighbours, 8, dtype=SnakesQ.TYPE_QTABLE), axis=1) * SnakesQ.NR_STATES_APPLE
+        if self.neighbour_multiplier.dtype != SnakesQ.TYPE_QTABLE:
+            raise(AssertionError("Unexpected neighbour multiplier dtype"))
+
+        super().__init__(*args,
+                         xy_head = xy_head,
+                         view_x = view_x,
+                         view_y = view_y,
+                         **kwargs)
+
+        self._q_table = np.empty((self.NR_STATES,
                                   Snakes.NR_DIRECTIONS),
                                  dtype=SnakesQ.TYPE_FLOAT)
         # self._rewards = np.empty(self._nr_snakes, dtype=SnakesQ.TYPE_FLOAT)
         self._learning_rate = SnakesQ.LEARNING_RATE / self.nr_snakes()
-        if (np.amin(SnakesQ.VISION_X) < -self.VIEW_X or
-            np.amax(SnakesQ.VISION_X) > +self.VIEW_X):
-            raise(AssertionError("X View not wide enough for vision"))
-        if (np.amin(SnakesQ.VISION_Y) < -self.VIEW_Y or
-            np.amax(SnakesQ.VISION_Y) > +self.VIEW_Y):
-            raise(AssertionError("Y View not high enough for vision"))
-        self._vision = self.pos_from_xy(SnakesQ.VISION_X, SnakesQ.VISION_Y)
+        if (vision.min_x < -self.VIEW_X or
+            vision.max_x > +self.VIEW_X):
+            raise(ValueError("X View not wide enough for vision"))
+        if (vision.min_y < -self.VIEW_Y or
+            vision.max_y > +self.VIEW_Y):
+            raise(ValueError("Y View not high enough for vision"))
+        self._vision_obj = vision
+        self._vision_pos = self.pos_from_xy(vision.x, vision.y)
 
     def run_start_extra(self, display):
         self._q_table.fill(SnakesQ.REWARD0)
@@ -1542,9 +1655,34 @@ class SnakesQ(Snakes):
         #    dtype=SnakesQ.TYPE_FLOAT)
 
     def state(self, apple, neighbour):
-        # Using a shift here caused an uint8 result and overflow
-        # With this we get uint16 result
-        return neighbour + apple * SnakesQ.NR_STATES_NEIGHBOUR
+        return apple + neighbour * SnakesQ.NR_STATES_APPLE
+
+    def unstate(self, state):
+        neighbour, apple = divmod(state, SnakesQ.NR_STATES_APPLE)
+
+        # Decode the apple direction
+        apple = Snakes.DIRECTION8_Y[apple], Snakes.DIRECTION8_X[apple]
+
+        # Decode the Neigbours
+        nr_states = self.NR_STATES_NEIGHBOUR
+        nr_neighbours = len(self._vision_obj)
+        nr_rows = math.ceil(nr_neighbours/8)
+        scalar = not isinstance(state, collections.abc.Sized)
+        size = 1 if scalar else len(state)
+        rows = np_empty((nr_rows, size), dtype=np.uint8)
+        for i in range(nr_rows-1):
+            neighbour, row = divmod(neighbour, 256)
+            rows[i] = row
+        rows[-1] = neighbour
+        # field will end up with padded extra zero rows up to a multiple of 8
+        field = np.unpackbits(rows, axis=0, bitorder='little')
+        if scalar:
+            field = np.squeeze(field)
+
+        return apple, field
+
+    def vision_from_state(self, state):
+        apple, field = self.unstate(state)
 
     def move_select(self, display, move_result):
         # debug = self.frame() % 100 == 0
@@ -1552,18 +1690,25 @@ class SnakesQ(Snakes):
 
         if debug: print("=" * 40)
         # print(self._q_table)
-        # print(self.snakes_string(display.rows, display.columns))
+        # if debug: print(self.snakes_string(display.rows, display.columns))
+        if debug: print(self.snakes_string(1, 1))
 
         is_eat = move_result.is_eat
         head = self.head()
 
         # Determine the neighbourhood of the head
         # self.print_pos("Head", head)
-        neighbours_pos = np.add.outer(self._vision, head)
+        neighbours_pos = np.add.outer(self._vision_pos, head)
         neighbours = self._field[self._all_snakes, neighbours_pos]
-        neighbour_state = np.squeeze(np.packbits(neighbours, axis=0,
-                                                 bitorder="little"), axis=0)
-        # if debug: print("Neigbour state", neighbour_state)
+        neighbours_packed = np.packbits(neighbours, axis=0,
+                                      bitorder="little")
+        neighbour_state = neighbours_packed * self.neighbour_multiplier
+        if len(neighbour_state > 1):
+            neighbour_state = np.sum(neighbour_state,
+                                     axis=0, dtype=SnakesQ.TYPE_QTABLE)
+        else:
+            neighbour_state = np.squeeze(neighbour_state, axis=0)
+        # if debug: print("Neigbour state", neighbour_state / SnakesQ.NR_STATES_APPLE)
 
         # Determine the direction of the apple
         if self._xy_head:
@@ -1586,11 +1731,12 @@ class SnakesQ(Snakes):
         # if debug: print("Apple state", apple_state)
         if debug:
             print("Apple state[0]", apple_state[0])
-            print("Neigbour state[0]", neighbour_state[0])
+            print("Neigbour state[0]",
+                  neighbour_state[0] / SnakesQ.NR_STATES_APPLE)
 
-        # dir8 can take on 8 values, neighbour_state can take 16
-        state = self.state(apple     = apple_state,
-                           neighbour = neighbour_state)
+        state = neighbour_state + apple_state
+        if debug:
+            print(self._vision_obj.string(final_newline = False, flags = neighbours[:,0]))
         # if debug: print("State", state)
         if debug: print("Old State[0]", None if is_eat is None else self._state[0], "New State[0]", state[0])
 
@@ -1598,8 +1744,7 @@ class SnakesQ(Snakes):
         if is_eat is not None:
             q_row = self._q_table[state]
             if debug:
-                print("Q row[0] before")
-                print(q_row[0])
+                print("Qrow[0] before:", q_row[0])
             # rewards = self._rewards
             # rewards.fill(SnakesQ.REWARD_MOVE)
             rewards = np.random.uniform(-SnakesQ.REWARD_RAND/2,
@@ -1625,19 +1770,20 @@ class SnakesQ(Snakes):
             rewards += advantage
             # print("Update", rewards)
             rewards *= self._learning_rate
-            if debug: print("Update[0]", rewards[0])
+            if debug:
+                print("Q old", self._q_table[self._state[0]])
+                print("Update0[%d][%d]" % (self._state[0], self._action[0]), rewards[0])
             # Potentially need to multi-update the same position, so use ads.at
-            # print("Old Q[0] before", self._q_table[self._state[0], self._action[0]])
             np.add.at(self._q_table, (self._state, self._action), rewards)
-            # print("Old Q[0] after", self._q_table[self._state[0], self._action[0]])
+            if debug:
+                print("Q new", self._q_table[self._state[0]])
             #if np.isnan(self._q_table).any():
             #    raise(AssertionError("Q table contains nan"))
 
         # Decide what to do
         q_row = self._q_table[state]
         if debug:
-            print("Q row[0] after")
-            print(q_row[0])
+            print("Qrow[0] after: ", q_row[0])
         # print("Current Q_row[0]", q_row[0])
         action = q_row.argmax(axis=-1)
         if debug: print("Old Action[0]", None if is_eat is None else self._action[0], "New action[0]", action[0])
@@ -1680,10 +1826,11 @@ class SnakesQ(Snakes):
                 randomize = randomize[hit]
                 permutations = permutations[hit]
 
-        if debug:
-            empty_state = self.state(apple = np.arange(SnakesQ.NR_STATES_APPLE),
-                                     neighbour = 0)
-            print(self._q_table[empty_state])
+        # if debug:
+        #    empty_state = self.state(apple = np.arange(SnakesQ.NR_STATES_APPLE),
+        #                             neighbour = 0)
+        #    print(self._q_table[empty_state])
+        if debug: sys.stdout.flush()
         # Take the selected action and remember where we came from
         self._state  = state
         self._action = action
@@ -1711,19 +1858,23 @@ columns    = int(arguments["--columns"])
 rows       = int(arguments["--rows"])
 nr_snakes  = int(arguments["--snakes"]) or rows*columns
 block_size = int(arguments["--block"])
+snake_kwargs = dict()
+if arguments["--vision-file"] is not None:
+    snake_kwargs["vision"] = VisionFile(arguments["--vision-file"])
 
 snakes = SnakesQ(nr_snakes = nr_snakes,
                 debug     = arguments["--debug"],
                 width     = int(arguments["--width"]),
                 height    = int(arguments["--height"]),
-                frame_max = int(arguments["--frames"]))
+                frame_max = int(arguments["--frames"]),
+                **snake_kwargs)
 
 # +
 with Display(snakes,
-             columns=columns,
-             rows=rows,
+             columns = columns,
+             rows = rows,
              block_size = block_size,
-             slow_updates =0 ) as display:
+             slow_updates = 0) as display:
     while snakes.draw_run(display,
                           fps=float(arguments["--fps"]),
                           stepping=arguments["--stepping"]):

@@ -1,0 +1,4 @@
+# Snake sees all in 3x3
+* * *
+* O *
+* * *
