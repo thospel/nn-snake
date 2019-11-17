@@ -839,20 +839,22 @@ class Snakes:
         # self.print_pos("All", self._all0)
 
         # empty_pit is just the edges with a permanently empty playing field
-        self._empty_pit = np.ones((self.HEIGHT1, self.WIDTH1), dtype=TYPE_FLAG)
-        self._empty_pit[self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH] = 0
+        self._pit_empty = np.ones((self.HEIGHT1, self.WIDTH1), dtype=TYPE_FLAG)
+        self._pit_empty[self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH] = 0
+        # Easy way to check if a position is inside the pit
+        self._pit_flag = np.logical_not(self._pit_empty)
         # self._field1 = np.ones((nr_snakes, self.HEIGHT1, self.WIDTH1), dtype=TYPE_FLAG)
 
         # The playing field starts out as nr_snakes copies of the empty pit
         # Notice that we store in row major order, so use field[snake,y,x]
         # (This makes interpreting printouts a lot easier)
-        self._field1 = self._empty_pit.reshape(1,self.HEIGHT1,self.WIDTH1).repeat(nr_snakes, axis=0)
+        self._field1 = self._pit_empty.reshape(1,self.HEIGHT1,self.WIDTH1).repeat(nr_snakes, axis=0)
         self._field0 = self._field1[:, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH]
         if self._field0.base is not self._field1:
             raise(AssertionError("field0 is a copy instead of a view"))
         self._field = self._field1.reshape(nr_snakes, self.HEIGHT1*self.WIDTH1)
         if self._field.base is not self._field1:
-            raise(AssertionError("field0 is a copy instead of a view"))
+            raise(AssertionError("field is a copy instead of a view"))
 
         # self._apple_pit = np.zero((self.HEIGHT, self.WIDTH, self.HEIGHT, self.WIDTH),
 
@@ -1581,15 +1583,16 @@ class SnakesQ(Snakes):
     TYPE_QTABLE   = np.uint32
     DISCOUNT      = 0.99
     LEARNING_RATE = 0.1
-    EPSILON_INV   = 1000
-    REWARD_APPLE  = 1
-    REWARD_CRASH  = -100
+    EPSILON_INV   = 10000
+    REWARD_APPLE  = TYPE_FLOAT(1000)
+    REWARD_CRASH  = TYPE_FLOAT(-100000)
     # A small penalty for taking too long to get to an apple
-    REWARD_MOVE   = -0.0001
+    REWARD_MOVE   = TYPE_FLOAT(-0.1)
     # Small random disturbance to escape from loops
-    REWARD_RAND   =  0.001
+    REWARD_RAND   =  TYPE_FLOAT(1)
     # Prefill to encourage early exploration
-    REWARD0       = TYPE_FLOAT(0.01)
+    # REWARD0       = TYPE_FLOAT(10)
+    REWARD0       = TYPE_FLOAT(0)
     LOOP_MAX      = 100
     LOOP_ESCAPE   = LOOP_MAX
 
@@ -1605,6 +1608,7 @@ class SnakesQ(Snakes):
                  view_x = None, view_y = None,
                  xy_head = False,
                  vision = VISION,
+                 wall_left = 0, wall_right = 0, wall_up = 0, wall_down = 0,
                  **kwargs):
         if view_x is None:
             view_x = max(Snakes.VIEW_X0, -np.amin(vision.x), np.amax(vision.x))
@@ -1615,16 +1619,6 @@ class SnakesQ(Snakes):
         if nr_neighbours <= 0:
             raise(AssertionError("Your snake is blind"))
         self.NR_STATES_NEIGHBOUR = 2 ** nr_neighbours
-        self.NR_STATES = SnakesQ.NR_STATES_APPLE * self.NR_STATES_NEIGHBOUR
-        if self.NR_STATES > SnakesQ.NR_STATES_MAX:
-            raise(ValueError("Number of states too high for Q table index type"))
-        print("Q table has", self.NR_STATES, "states")
-        print("Snake Vision:")
-        print(vision.string(final_newline = False))
-        # The previous test made sure this won't overflow
-        self.neighbour_multiplier = np.expand_dims(1 << np.arange(0, nr_neighbours, 8, dtype=SnakesQ.TYPE_QTABLE), axis=1) * SnakesQ.NR_STATES_APPLE
-        if self.neighbour_multiplier.dtype != SnakesQ.TYPE_QTABLE:
-            raise(AssertionError("Unexpected neighbour multiplier dtype"))
 
         super().__init__(*args,
                          xy_head = xy_head,
@@ -1632,9 +1626,6 @@ class SnakesQ(Snakes):
                          view_y = view_y,
                          **kwargs)
 
-        self._q_table = np.empty((self.NR_STATES,
-                                  Snakes.NR_DIRECTIONS),
-                                 dtype=SnakesQ.TYPE_FLOAT)
         # self._rewards = np.empty(self._nr_snakes, dtype=SnakesQ.TYPE_FLOAT)
         self._learning_rate = SnakesQ.LEARNING_RATE / self.nr_snakes()
         if (vision.min_x < -self.VIEW_X or
@@ -1646,6 +1637,61 @@ class SnakesQ(Snakes):
         self._vision_obj = vision
         self._vision_pos = self.pos_from_xy(vision.x, vision.y)
 
+        if wall_left  < 0: raise(ValueError("wall_left must not be negative"))
+        if wall_right < 0: raise(ValueError("wall_right must not be negative"))
+        if wall_up    < 0: raise(ValueError("wall_up must not be negative"))
+        if wall_down  < 0: raise(ValueError("wall_down must not be negative"))
+
+        wall_x = np.zeros(self.WIDTH1, SnakesQ.TYPE_QTABLE)
+        # If we VERY carefully consider all case we don't need the dict() method
+        # But that would be much less obvious
+        wall_seen_x = dict()
+        for x in range(self.WIDTH):
+            left  = min(x+1, wall_left+1)
+            right = min(self.WIDTH-x, wall_right+1)
+            if (left, right) not in wall_seen_x:
+                n = len(wall_seen_x)
+                wall_seen_x[left, right] = n
+            wall_x[self.VIEW_X + x] = wall_seen_x[left, right]
+
+        wall_y = np.zeros(self.HEIGHT1, SnakesQ.TYPE_QTABLE)
+        wall_seen_y = dict()
+        for y in range(self.HEIGHT):
+            up  = min(y+1, wall_up+1)
+            down = min(self.HEIGHT-y, wall_down+1)
+            if (up, down) not in wall_seen_y:
+                n = len(wall_seen_y)
+                wall_seen_y[up, down] = n
+            wall_y[self.VIEW_Y + y] = wall_seen_y[up, down]
+
+        self.NR_STATES_WALL = len(wall_seen_x) * len(wall_seen_y)
+        self._wall1 = np.add.outer(wall_y * len(wall_seen_x), wall_x)
+        # Just to make self._wall1 print nicer set the outer edge to nr states
+        # Makes no difference since you should never access the edge
+        self._wall1 *= self._pit_flag
+        self._wall1 += self._pit_empty * SnakesQ.TYPE_QTABLE(self.NR_STATES_WALL)
+        # And avoid needing to do the apple multiplier:
+        self._wall1 *= SnakesQ.NR_STATES_APPLE
+        self._wall = self._wall1.reshape(self._wall1.size)
+        if self._wall.base is not self._wall1:
+            raise(AssertionError("wall is a copy instead of a view"))
+
+        self.NR_STATES = SnakesQ.NR_STATES_APPLE * self.NR_STATES_NEIGHBOUR * self.NR_STATES_WALL
+        if self.NR_STATES > SnakesQ.NR_STATES_MAX:
+            raise(ValueError("Number of states too high for Q table index type"))
+        self._q_table = np.empty((self.NR_STATES,
+                                  Snakes.NR_DIRECTIONS),
+                                 dtype=SnakesQ.TYPE_FLOAT)
+        print("Q table has", self.NR_STATES, "states")
+        print("Snake Vision:")
+        print(vision.string(final_newline = False))
+        sys.stdout.flush()
+
+        # The previous test made sure this won't overflow
+        self.neighbour_multiplier = np.expand_dims(1 << np.arange(0, nr_neighbours, 8, dtype=SnakesQ.TYPE_QTABLE), axis=1) * (SnakesQ.NR_STATES_APPLE * self.NR_STATES_WALL)
+        if self.neighbour_multiplier.dtype != SnakesQ.TYPE_QTABLE:
+            raise(AssertionError("Unexpected neighbour multiplier dtype"))
+
     def run_start_extra(self, display):
         self._q_table.fill(SnakesQ.REWARD0)
         #self._q_table = np.array(
@@ -1654,17 +1700,17 @@ class SnakesQ(Snakes):
         #                      size=(SnakesQ.NR_STATES, Snakes.NR_DIRECTIONS)),
         #    dtype=SnakesQ.TYPE_FLOAT)
 
-    def state(self, apple, neighbour):
-        return apple + neighbour * SnakesQ.NR_STATES_APPLE
+    def state(self, apple, wall, neighbour):
+        return apple + SnakesQ.NR_STATES_APPLE * (wall + self.NR_STATES_WALL * neighbour)
 
     def unstate(self, state):
-        neighbour, apple = divmod(state, SnakesQ.NR_STATES_APPLE)
+        state_rest, apple = divmod(state,      SnakesQ.NR_STATES_APPLE)
+        neighbour,  wall  = divmod(state_rest, self.NR_STATES_WALL)
 
         # Decode the apple direction
         apple = Snakes.DIRECTION8_Y[apple], Snakes.DIRECTION8_X[apple]
 
         # Decode the Neigbours
-        nr_states = self.NR_STATES_NEIGHBOUR
         nr_neighbours = len(self._vision_obj)
         nr_rows = math.ceil(nr_neighbours/8)
         scalar = not isinstance(state, collections.abc.Sized)
@@ -1679,7 +1725,8 @@ class SnakesQ(Snakes):
         if scalar:
             field = np.squeeze(field)
 
-        return apple, field
+        # Todo: Decode the wall
+        return apple, wall, field
 
     def vision_from_state(self, state):
         apple, field = self.unstate(state)
@@ -1696,10 +1743,15 @@ class SnakesQ(Snakes):
         is_eat = move_result.is_eat
         head = self.head()
 
+        # Determine the wall state
+        wall_state = self._wall[head]
+
         # Determine the neighbourhood of the head
         # self.print_pos("Head", head)
         neighbours_pos = np.add.outer(self._vision_pos, head)
         neighbours = self._field[self._all_snakes, neighbours_pos]
+        # Walls are automatically set unique, so no need to zero them
+        # neighbours = np.logical_and(neighbours, self._pit_flag[neighbours_pos])
         neighbours_packed = np.packbits(neighbours, axis=0,
                                       bitorder="little")
         neighbour_state = neighbours_packed * self.neighbour_multiplier
@@ -1730,11 +1782,12 @@ class SnakesQ(Snakes):
         apple_state = Snakes.DIRECTION8_ID[dy, dx]
         # if debug: print("Apple state", apple_state)
         if debug:
-            print("Apple state[0]", apple_state[0])
-            print("Neigbour state[0]",
-                  neighbour_state[0] / SnakesQ.NR_STATES_APPLE)
+            print("Apple state[0]:", apple_state[0])
+            print("Wall state[0]:", wall_state[0] / SnakesQ.NR_STATES_APPLE)
+            print("Neigbour state[0]:",
+                  neighbour_state[0] / (SnakesQ.NR_STATES_APPLE * self.NR_STATES_WALL))
 
-        state = neighbour_state + apple_state
+        state = neighbour_state + wall_state + apple_state
         if debug:
             print(self._vision_obj.string(final_newline = False, flags = neighbours[:,0]))
         # if debug: print("State", state)
@@ -1828,6 +1881,7 @@ class SnakesQ(Snakes):
 
         # if debug:
         #    empty_state = self.state(apple = np.arange(SnakesQ.NR_STATES_APPLE),
+        #                             wall = 0,
         #                             neighbour = 0)
         #    print(self._q_table[empty_state])
         if debug: sys.stdout.flush()
@@ -1863,11 +1917,13 @@ if arguments["--vision-file"] is not None:
     snake_kwargs["vision"] = VisionFile(arguments["--vision-file"])
 
 snakes = SnakesQ(nr_snakes = nr_snakes,
-                debug     = arguments["--debug"],
-                width     = int(arguments["--width"]),
-                height    = int(arguments["--height"]),
-                frame_max = int(arguments["--frames"]),
-                **snake_kwargs)
+                 debug     = arguments["--debug"],
+                 width     = int(arguments["--width"]),
+                 height    = int(arguments["--height"]),
+                 frame_max = int(arguments["--frames"]),
+                 wall_left = 2, wall_right = 2,
+                 wall_up = 2,   wall_down = 2,
+                 **snake_kwargs)
 
 # +
 with Display(snakes,
