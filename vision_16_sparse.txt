@@ -1,0 +1,8 @@
+# Snake tries to detect dead ends without seeing too many positions
+      *
+    *   *
+  *   *   *
+*   * O *   *
+  *   *   *
+    *   *
+      *

@@ -20,7 +20,7 @@ Usage:
   snake.py [-f <file>] [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
            [--width=<width>] [--height=<height>] [--frames=<frames>]
            [--columns=columns] [--rows=rows] [--block=<block_size>]
-           [--vision-file=<file>]
+            [--wall=<wall>] [--vision-file=<file>] [--dump-file=<file>]
   snake.py --benchmark
   snake.py (-h | --help)
   snake..py --version
@@ -39,7 +39,11 @@ Options:
   --rows=<rows>         Rows of pits to display [default: 1]
   --frames=<frames>     Stop automatically at this frames number [Default: -1]
   --benchmark           Run a simple speed benchmark
+  --wall=<wall>         Have state for distance from wall up to <wall>
+                        [Default: 2]
   --vision-file=<file>  Read snake vision from file
+  --dump-file=<file>    Which file to dump to on keypress
+                        [Default: snakes.dump.txt]
   --debug               Run debug code
   -f <file>:            Used by jupyter, ignored
 
@@ -51,6 +55,7 @@ Display key actions:
   -:          Less frames per second (wait time *= 2)
   =:          Restore the original frames per second
   d:          Toggle debug
+  D:
 
 """
 from docopt import docopt
@@ -78,6 +83,7 @@ import itertools
 import collections.abc
 import time
 import numpy as np
+np.set_printoptions(floatmode="fixed", precision=10, suppress=True)
 
 import os
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
@@ -780,11 +786,13 @@ class Snakes:
                  height    = int(DEFAULTS["--height"]),
                  frame_max = int(DEFAULTS["--frames"]),
                  view_x = None, view_y = None,
+                 dump_file = DEFAULTS["--dump-file"],
                  debug = False, xy_apple = True, xy_head = True):
         if nr_snakes <= 0:
             raise(ValueError("Number of snakes must be positive"))
 
-        self._debug = debug
+        self._dump_file = dump_file
+        self.debug = debug
         # Do we keep a cache of apple coordinates ?
         # This helps if e.g. we need the coordinates on every move decission
         self._xy_apple = xy_apple
@@ -873,6 +881,33 @@ class Snakes:
         self._nr_games_won = np_empty(nr_snakes, TYPE_GAMES)
         self._nr_games = np_empty(nr_snakes, TYPE_GAMES)
 
+    def dump(self, file):
+        self.timestamp()
+        with open(file, "w") as fh:
+            self.dump_fh(fh)
+
+    def dump_fh(self, fh):
+        print("Type:", type(self).__name__, file=fh)
+        print("Width:  %2d" % self.WIDTH,   file=fh)
+        print("Height: %2d" % self.HEIGHT,  file=fh)
+        print("Snakes:%3d"  % self.nr_snakes, file=fh)
+        print("View X: %2d" % self.VIEW_X,  file=fh)
+        print("View_Y: %2d" % self.VIEW_Y,  file=fh)
+        print("Elapsed:%8.3f" % self.elapsed(), file=fh)
+        print("Paused: %8.3f" % self.paused(),  file=fh)
+        print("Used:   %8.3f" % self.elapsed_process(), file=fh)
+        print("Frame: ", self.frame(), file=fh)
+        print("Frames skipped:", self.frames_skipped(), file=fh)
+        print("Frame rate: %.3f" % self.frame_rate(), file=fh)
+        print("Games Total: ", self.nr_games_total(), file=fh)
+        print("Games Won: ", self.nr_games_won_total(), file=fh)
+        print("Score Max: ", self.score_max(), file=fh)
+        print("Score Total: ", self.score_total_games(), file=fh)
+        print("Moves Max: ", self.nr_moves_max(), file=fh)
+        print("Moves total: ", self.nr_moves_total_games(), file=fh)
+        print("Moves/Game:", self.nr_moves_per_game(), file=fh)
+        print("Moves/Apple:",  self.nr_moves_per_apple(), file=fh)
+
     def rand_x(self, nr):
         offset_x = self.VIEW_X
         return np.random.randint(offset_x, offset_x+self.WIDTH,  size=nr, dtype=TYPE_POS)
@@ -889,6 +924,7 @@ class Snakes:
         rand_y = self.rand_y(nr)
         return rand_x + rand_y * self.WIDTH1
 
+    @property
     def nr_snakes(self):
         return self._nr_snakes
 
@@ -1024,7 +1060,7 @@ class Snakes:
     # Sprinkle new apples in all pits where the snake ate them (todo)
     # On a 40x40 pit with the greedy algorithm about 3.5% of snakes need apples
     def new_apples(self, todo):
-        if self._debug:
+        if self.debug:
             too_large = self._body_length[todo] >= self.AREA-1
             if too_large.any():
                 raise(AssertionError("No place for apples"))
@@ -1151,6 +1187,9 @@ class Snakes:
         return self._cur_move
 
     def elapsed(self):
+        return self._time_end - self._time_start
+
+    def elapsed_now(self):
         return self._time_end - self._time_start
 
     def elapsed_process(self):
@@ -1357,7 +1396,7 @@ class Snakes:
     def run_start(self, display,
                   fps      = int(DEFAULTS["--fps"]),
                   stepping = DEFAULTS["--stepping"]):
-        nr_windows = min(self.nr_snakes(), display.windows)
+        nr_windows = min(self.nr_snakes, display.windows)
         # self._all_windows = np.arange(nr_windows-1, -1, -1, dtype=TYPE_INDEX)
         self._all_windows = np.arange(nr_windows, dtype=TYPE_INDEX)
 
@@ -1387,11 +1426,11 @@ class Snakes:
 
         # print("Initial heads")
         if self._xy_head:
-            self._head_x = self.rand_x(self.nr_snakes())
-            self._head_y = self.rand_y(self.nr_snakes())
+            self._head_x = self.rand_x(self.nr_snakes)
+            self._head_y = self.rand_y(self.nr_snakes)
             head = self._head_x + self._head_y * self.WIDTH1
         else:
-            head = self.rand(self.nr_snakes())
+            head = self.rand(self.nr_snakes)
         self.head_set(head)
         self.new_apples(self._all_snakes)
 
@@ -1437,13 +1476,18 @@ class Snakes:
             self._pause_time = 0
             self._frames_skipped = 0
 
-    # We are done moving snake. Report some statistics and cleanup
-    def run_finish(self):
+    def timestamp(self):
         self._time_process_end = time.process_time()
         self._time_end = time.monotonic()
         if self._pause_time:
             self._paused += self._time_end - self._pause_time
+            self._pause_time = self._time_end
             self._frames_skipped += self.frame() - self._pause_frame
+            self._pause_frame = self.frame()
+
+    # We are done moving snake. Report some statistics and cleanup
+    def run_finish(self):
+        self.timestamp()
 
         score_max = np.amax(self._body_length)
         if score_max > self._score_max:
@@ -1515,9 +1559,15 @@ class Snakes:
                     self._poll_fast = self._poll_fast0
                     self._time_target = max(now, self._time_target + self._poll_fast)
                 elif key == "d":
-                    self._debug = not self._debug
+                    self.debug = not self.debug
+                elif key == "D":
+                    self.dump(self._dump_file)
+                    if self.debug:
+                        print("Dumped to", self._dump_file, flush=True)
                 elif key == "q":
                     return False
+                elif self.debug:
+                    print("Unknown key <%s>" % key)
 
             if self._pause_time:
                 if self._stepping:
@@ -1553,7 +1603,7 @@ class Snakes:
             if not self.move_show(display, pos):
                 self.run_finish()
                 return
-            if self._debug:
+            if self.debug:
                 self.move_debug()
 
             move_result = self.move_evaluate(pos)
@@ -1581,17 +1631,17 @@ class SnakesRandomUnblocked(Snakes):
 class SnakesQ(Snakes):
     TYPE_FLOAT    = np.float32
     TYPE_QTABLE   = np.uint32
-    DISCOUNT      = 0.99
-    LEARNING_RATE = 0.1
+    DISCOUNT      = TYPE_FLOAT(0.99)
+    LEARNING_RATE = TYPE_FLOAT(0.1)
     EPSILON_INV   = 10000
-    REWARD_APPLE  = TYPE_FLOAT(1000)
-    REWARD_CRASH  = TYPE_FLOAT(-100000)
+    REWARD_APPLE  = TYPE_FLOAT(1)
+    REWARD_CRASH  = TYPE_FLOAT(-100)
     # A small penalty for taking too long to get to an apple
-    REWARD_MOVE   = TYPE_FLOAT(-0.1)
+    REWARD_MOVE   = TYPE_FLOAT(-0.0001)
     # Small random disturbance to escape from loops
-    REWARD_RAND   =  TYPE_FLOAT(1)
+    REWARD_RAND   =  TYPE_FLOAT(0.001)
     # Prefill to encourage early exploration
-    # REWARD0       = TYPE_FLOAT(10)
+    # REWARD0       = TYPE_FLOAT(0.01)
     REWARD0       = TYPE_FLOAT(0)
     LOOP_MAX      = 100
     LOOP_ESCAPE   = LOOP_MAX
@@ -1627,7 +1677,7 @@ class SnakesQ(Snakes):
                          **kwargs)
 
         # self._rewards = np.empty(self._nr_snakes, dtype=SnakesQ.TYPE_FLOAT)
-        self._learning_rate = SnakesQ.LEARNING_RATE / self.nr_snakes()
+        self._learning_rate = SnakesQ.LEARNING_RATE / self.nr_snakes
         if (vision.min_x < -self.VIEW_X or
             vision.max_x > +self.VIEW_X):
             raise(ValueError("X View not wide enough for vision"))
@@ -1641,6 +1691,10 @@ class SnakesQ(Snakes):
         if wall_right < 0: raise(ValueError("wall_right must not be negative"))
         if wall_up    < 0: raise(ValueError("wall_up must not be negative"))
         if wall_down  < 0: raise(ValueError("wall_down must not be negative"))
+        self._wall_left  = wall_left
+        self._wall_right = wall_right
+        self._wall_up    = wall_up
+        self._wall_down  = wall_down
 
         wall_x = np.zeros(self.WIDTH1, SnakesQ.TYPE_QTABLE)
         # If we VERY carefully consider all case we don't need the dict() method
@@ -1700,6 +1754,33 @@ class SnakesQ(Snakes):
         #                      size=(SnakesQ.NR_STATES, Snakes.NR_DIRECTIONS)),
         #    dtype=SnakesQ.TYPE_FLOAT)
 
+    def dump_fh(self, fh):
+        super().dump_fh(fh)
+
+        print("Vision: <<EOT", file=fh)
+        print(self._vision_obj.string(final_newline = False), file=fh)
+        print("EOT", file=fh)
+
+        print("Wall left:%3d"  % self._wall_left,  file=fh)
+        print("Wall right:%2d" % self._wall_right, file=fh)
+        print("Wall up:%5d"    % self._wall_up,    file=fh)
+        print("Wall down:%3d"  % self._wall_down,  file=fh)
+        print("NrStates:",       self.NR_STATES,   file=fh)
+
+        print("learning rate:", SnakesQ.LEARNING_RATE, file=fh)
+        print("Reward apple: ", SnakesQ.REWARD_APPLE,  file=fh)
+        print("Reward crash: ", SnakesQ.REWARD_CRASH,  file=fh)
+        print("Reward move:  ", SnakesQ.REWARD_MOVE,   file=fh)
+        print("Reward rand:  ", SnakesQ.REWARD_RAND,   file=fh)
+        print("Reward init:  ", SnakesQ.REWARD0,       file=fh)
+        print("Discount:     ", SnakesQ.DISCOUNT,      file=fh)
+        print("Epsilon:      ", 1/SnakesQ.EPSILON_INV, file=fh)
+
+        print("Q table: <<EOT", file=fh)
+        with np.printoptions(threshold=self._q_table.size):
+            print(self._q_table, file=fh)
+        print("EOT", file=fh)
+
     def state(self, apple, wall, neighbour):
         return apple + SnakesQ.NR_STATES_APPLE * (wall + self.NR_STATES_WALL * neighbour)
 
@@ -1733,7 +1814,7 @@ class SnakesQ(Snakes):
 
     def move_select(self, display, move_result):
         # debug = self.frame() % 100 == 0
-        debug = self._debug
+        debug = self.debug
 
         if debug: print("=" * 40)
         # print(self._q_table)
@@ -1802,7 +1883,7 @@ class SnakesQ(Snakes):
             # rewards.fill(SnakesQ.REWARD_MOVE)
             rewards = np.random.uniform(-SnakesQ.REWARD_RAND/2,
                                         +SnakesQ.REWARD_RAND/2,
-                                        size=self.nr_snakes())
+                                        size=self.nr_snakes)
             r = np.random.uniform(-SnakesQ.REWARD_RAND,
                                   +SnakesQ.REWARD_RAND)
             rewards += SnakesQ.REWARD_MOVE + r
@@ -1850,7 +1931,7 @@ class SnakesQ(Snakes):
         #    if escaping.size:
         #        # We could also avoid crashing here
         #        action[escaping] = np.random.randint(Snakes.NR_DIRECTIONS, size = escaping.size)
-        accept = np.random.randint(SnakesQ.EPSILON_INV, size=self.nr_snakes())
+        accept = np.random.randint(SnakesQ.EPSILON_INV, size=self.nr_snakes)
         randomize = (accept == 0).nonzero()[0]
         if randomize.size:
             # print("Randomize", randomize)
@@ -1903,7 +1984,7 @@ if arguments["--benchmark"]:
                                   fps=0,
                                   stepping=False):
                 pass
-            speed = max(speed, snakes.frame() * snakes.nr_snakes() / snakes.elapsed())
+            speed = max(speed, snakes.frame() * snakes.nr_snakes / snakes.elapsed())
     print("%.0f" % speed)
     sys.exit()
 
@@ -1915,14 +1996,14 @@ block_size = int(arguments["--block"])
 snake_kwargs = dict()
 if arguments["--vision-file"] is not None:
     snake_kwargs["vision"] = VisionFile(arguments["--vision-file"])
-
+wall       = int(arguments["--wall"])
 snakes = SnakesQ(nr_snakes = nr_snakes,
                  debug     = arguments["--debug"],
                  width     = int(arguments["--width"]),
                  height    = int(arguments["--height"]),
                  frame_max = int(arguments["--frames"]),
-                 wall_left = 2, wall_right = 2,
-                 wall_up = 2,   wall_down = 2,
+                 wall_left = wall, wall_right = wall,
+                 wall_up   = wall, wall_down = wall,
                  **snake_kwargs)
 
 # +
