@@ -44,7 +44,9 @@ Options:
   --wall=<wall>           Have state for distance from wall up to <wall>
                           [Default: 2]
   --vision-file=<file>    Read snake vision from file
-  --log-file=<file>       Write to logfile
+  --log-file=<file>       Write to logfile. Use an empty string if you
+                          explicitely don't want any logging
+                          [Default: snakes.log.txt]
   --dump-file=<file>      Which file to dump to on keypress
                           [Default: snakes.dump.txt]
   -l --learning-rate=<r>  Learning rate (will get divided by number of snakes)
@@ -99,6 +101,32 @@ import platform
 import pygame
 import pygame.freetype
 from pygame.locals import *
+
+
+# +
+import hashlib
+
+def script():
+    try:
+        return __file__
+    except:
+        return None
+
+def read_bin(file = script()):
+    if file is None:
+        return None
+    with open(file, "rb") as fh:
+        return fh.read()
+
+# Calculate object hash like git
+def file_object_hash(file = script()):
+    body = read_bin(file)
+    if body is None:
+        return None
+    h = hashlib.sha1()
+    h.update(b"blob %d\0" % len(body))
+    h.update(body)
+    return h.hexdigest()
 
 
 # +
@@ -569,6 +597,7 @@ class ActorCriticModel(tf.keras.Model):
 """
 
 
+# +
 def np_empty(shape, dtype):
     # return np.empty(shape, dtype)
     # Fill with garbage for debug
@@ -795,7 +824,7 @@ class Snakes:
                  frame_max = int(DEFAULTS["--frames"]),
                  view_x = None, view_y = None,
                  dump_file = DEFAULTS["--dump-file"],
-                 log_file  = None,
+                 log_file  = DEFAULTS["--log-file"],
                  debug = False, xy_apple = True, xy_head = True):
         if nr_snakes <= 0:
             raise(ValueError("Number of snakes must be positive"))
@@ -893,7 +922,7 @@ class Snakes:
         self._nr_games = np_empty(nr_snakes, TYPE_GAMES)
 
     def log_open(self):
-        if self._log_file is not None:
+        if self._log_file is not None and self._log_file != "":
             self._log_fh = open(self._log_file, "w")
 
     def log_close(self):
@@ -902,13 +931,15 @@ class Snakes:
             self._log_fh = None
 
     def log_constants(self, fh):
+        print("Script:", script(), file=fh)
+        print("Script Hash:", file_object_hash(), file=fh)
         print("Type:", type(self).__name__, file=fh)
         print("Hostname:", platform.node(),   file=fh)
-        print("Width:%6d" % self.WIDTH,   file=fh)
-        print("Height:%5d" % self.HEIGHT,  file=fh)
-        print("Snakes:%5d"  % self.nr_snakes, file=fh)
-        print("View X:%5d" % self.VIEW_X,  file=fh)
-        print("View_Y:%5d" % self.VIEW_Y,  file=fh)
+        print("Width:%8d" % self.WIDTH,   file=fh)
+        print("Height:%7d" % self.HEIGHT,  file=fh)
+        print("Snakes:%7d"  % self.nr_snakes, file=fh)
+        print("View X:%7d" % self.VIEW_X,  file=fh)
+        print("View_Y:%7d" % self.VIEW_Y,  file=fh)
 
     def log_start(self):
         if not self._log_fh:
@@ -947,9 +978,9 @@ class Snakes:
 
         fh = self._log_fh
         print("#----", file=fh)
-        print("Frame:", self.frame(), file=fh)
-        print("Elapsed: %.3f" % self.elapsed(), file=fh)
-        print("Paused: %8.3f" % self.paused(),  file=fh)
+        print("Frame:%12d"         % self.frame(), file=fh)
+        print("Elapsed:%14.3f"     % self.elapsed(), file=fh)
+        print("Paused:%15.3f"      % self.paused(),  file=fh)
         print("Frames skipped:%3d" % self.frames_skipped(), file=fh)
         print("Frame rate:%11.3f"  % self.frame_rate(), file=fh)
         print("Games Total:%6d"    % self.nr_games_total(), file=fh)
@@ -1719,7 +1750,7 @@ class SnakesQ(Snakes):
     REWARD_APPLE  = TYPE_FLOAT(1)
     REWARD_CRASH  = TYPE_FLOAT(-100)
     # A small penalty for taking too long to get to an apple
-    REWARD_MOVE   = TYPE_FLOAT(-0.0001)
+    REWARD_MOVE   = TYPE_FLOAT(-0.001)
     # Small random disturbance to escape from loops
     REWARD_RAND   =  TYPE_FLOAT(0.001)
     # Prefill to encourage early exploration
@@ -1880,16 +1911,16 @@ class SnakesQ(Snakes):
     def log_constants(self, fh):
         super().log_constants(fh)
 
+        print("Wall left:%4d"  % self._wall_left,  file=fh)
+        print("Wall right:%3d" % self._wall_right, file=fh)
+        print("Wall up:%6d"    % self._wall_up,    file=fh)
+        print("Wall down:%4d"  % self._wall_down,  file=fh)
+
         print("Vision: <<EOT", file=fh)
         print(self._vision_obj.string(final_newline = False), file=fh)
         print("EOT", file=fh)
 
-        print("Wall left:%3d"  % self._wall_left,  file=fh)
-        print("Wall right:%2d" % self._wall_right, file=fh)
-        print("Wall up:%5d"    % self._wall_up,    file=fh)
-        print("Wall down:%3d"  % self._wall_down,  file=fh)
-        print("NrStates:",       self.NR_STATES,   file=fh)
-
+        print("NrStates:%5d"   % self.NR_STATES,   file=fh)
         print("learning rate:", self._learning_rate * self.nr_snakes, file=fh)
         print("Discount:     ", self._discount,        file=fh)
         print("Epsilon:      ", 1/SnakesQ.EPSILON_INV, file=fh)
@@ -2012,8 +2043,6 @@ class SnakesQ(Snakes):
         if is_eat is not None:
             self._eat_frame[move_result.eaten] = self.frame()
             q_row = self._q_table[state]
-            if debug:
-                print("Qrow[0] before:", q_row[0])
             # rewards = self._rewards
             # rewards.fill(SnakesQ.REWARD_MOVE)
             rewards = np.random.uniform(-SnakesQ.REWARD_RAND/2,
@@ -2021,6 +2050,10 @@ class SnakesQ(Snakes):
                                         size=self.nr_snakes)
             r = np.random.uniform(-SnakesQ.REWARD_RAND,
                                   +SnakesQ.REWARD_RAND)
+            if debug:
+                print("Qrow[0] before:", q_row[0])
+                #print("base r:", r)
+                #print("rand r[0]:", rewards[0])
             rewards += SnakesQ.REWARD_MOVE + r
             rewards[move_result.eaten]    += SnakesQ.REWARD_APPLE
             # eaten at this point contains collided, so compensate by an apple
