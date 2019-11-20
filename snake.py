@@ -22,7 +22,7 @@ Usage:
            [--columns=columns] [--rows=rows] [--block=<block_size>]
            [--wall=<wall>]
            [--vision-file=<file>] [--dump-file=<file>] [--log-file=<log>]
-           [--learning-rate=<r>] [--discount <ratio>]
+           [--learning-rate=<r>] [--discount <ratio>] [--accelerated]
   snake.py --benchmark
   snake.py (-h | --help)
   snake..py --version
@@ -53,12 +53,15 @@ Options:
                           [Default: 0.1]
   --discount <ratio>      state to state Discount [Default: 0.99]
   --debug                 Run debug code
+  --accelerated           Prefill the Q table with walls
+                          It will learn this by itself but takes a long time if
+                          there are very many states
   -f <file>:              Used by jupyter, ignored
 
 Display key actions:
   s:          enter pause mode after doing a single step
   r, SPACE:   toggle run/pause mode
-  q, <close>: quit
+  Q, <close>: quit
   +:          More frames per second (wait time /= 2)
   -:          Less frames per second (wait time *= 2)
   =:          Restore the original frames per second
@@ -392,7 +395,7 @@ class Display:
             if events:
                 for event in events:
                     if event.type == QUIT:
-                        keys.append("q")
+                        keys.append("Q")
                     elif event.type == KEYDOWN:
                         keys.append(event.unicode)
         return keys
@@ -665,7 +668,7 @@ class Vision(dict):
             elif ch == "*":
                 see_x.append(x)
                 see_y.append(y)
-            elif ch == "O":
+            elif ch == "O" or ch == "0":
                 if head_x is not None:
                     raise(ValueError("Multiple heads in vision string"))
                 head_x = x
@@ -691,6 +694,13 @@ class Vision(dict):
         if odd_x.any():
             raise(ValueError("Field has odd distance from head"))
         vision_x //= 2
+
+        # Order by taxi distance and angle
+        taxi  = abs(vision_x) + abs(vision_y)
+        angle = np.arctan2(-vision_y, vision_x) % (2 * np.pi)
+        order = np.lexsort((angle, taxi))
+        vision_x = vision_x[order]
+        vision_y = vision_y[order]
 
         self.x = vision_x
         self.y = vision_y
@@ -1122,9 +1132,8 @@ class Snakes:
         return pos
 
     def snake_string(self, shape):
-        apple_y, apple_x = self.yx(self._apple[shape])
-        apple_x -= self.VIEW_X
-        apple_y -= self.VIEW_Y
+        apple_y, apple_x = self.yx0(self._apple[shape])
+        head_y, head_x = self.yx0(self.head()[shape])
         rows, columns = shape.shape
         horizontal = "+" + "-" * (2*self.WIDTH-1) + "+"
         horizontal = horizontal + (" " + horizontal) * (columns-1) + "\n"
@@ -1142,7 +1151,10 @@ class Snakes:
                         if x != 0:
                             str += " "
                         if field[y][x]:
-                            str += "#"
+                            if y == head_y[r,c] and x == head_x[r,c]:
+                                str += "O"
+                            else:
+                                str += "#"
                         elif y == apple_y[r,c] and x == apple_x[r,c]:
                             str += "@"
                         else:
@@ -1155,11 +1167,18 @@ class Snakes:
     def snakes_string(self, rows, columns):
         return self.snake_string(np.arange(rows*columns).reshape(rows, columns))
 
+    # Get coordinates in the pit WITH the edges
     # Does not work on negative numbers since divmod rounds toward 0
     def yx(self, array):
         y, x = np.divmod(array, self.WIDTH1)
         # print_xy("yx", x, y)
         return y, x
+
+    # Get coordinates in the pit WITHOUT the edges
+    # Does not work on negative numbers since divmod rounds toward 0
+    def yx0(self, array):
+        y, x = np.divmod(array, self.WIDTH1)
+        return y - self.VIEW_Y, x - self.VIEW_X
 
     def print_pos(self, text, pos):
         print_yx(text, self.yx(pos))
@@ -1507,6 +1526,7 @@ class Snakes:
         nr_windows = min(self.nr_snakes, display.windows)
         # self._all_windows = np.arange(nr_windows-1, -1, -1, dtype=TYPE_INDEX)
         self._all_windows = np.arange(nr_windows, dtype=TYPE_INDEX)
+        self._debug_index = self._all_windows[0] if nr_windows else None
 
         if fps > 0:
             self._poll_fast = 1 / fps
@@ -1745,7 +1765,7 @@ class SnakesRandomUnblocked(Snakes):
 
 class SnakesQ(Snakes):
     TYPE_FLOAT    = np.float32
-    TYPE_QTABLE   = np.uint32
+    TYPE_QSTATE   = np.uint32
     EPSILON_INV   = 10000
     REWARD_APPLE  = TYPE_FLOAT(1)
     REWARD_CRASH  = TYPE_FLOAT(-100)
@@ -1753,8 +1773,8 @@ class SnakesQ(Snakes):
     REWARD_MOVE   = TYPE_FLOAT(-0.001)
     # Small random disturbance to escape from loops
     REWARD_RAND   =  TYPE_FLOAT(0.001)
-    # Prefill to encourage early exploration
-    # REWARD0       = TYPE_FLOAT(0.01)
+    # Prefill with 0 is enough to encourage some early exploration since
+    # we have a negative reward for moving
     REWARD0       = TYPE_FLOAT(0)
     # LOOP is in units of AREA
     LOOP_MAX      = 2
@@ -1766,7 +1786,7 @@ class SnakesQ(Snakes):
       *
     """)
     NR_STATES_APPLE = 8
-    NR_STATES_MAX = np.iinfo(TYPE_QTABLE).max
+    NR_STATES_MAX = np.iinfo(TYPE_QSTATE).max
 
     def __init__(self, *args,
                  view_x = None, view_y = None,
@@ -1775,7 +1795,10 @@ class SnakesQ(Snakes):
                  wall_left = 0, wall_right = 0, wall_up = 0, wall_down = 0,
                  learning_rate = float(DEFAULTS["--learning-rate"]),
                  discount      = float(DEFAULTS["--discount"]),
+                 accelerated = False,
                  **kwargs):
+
+        self._accelerated = accelerated
         if view_x is None:
             view_x = max(Snakes.VIEW_X0, -np.amin(vision.x), np.amax(vision.x))
         if view_y is None:
@@ -1805,16 +1828,32 @@ class SnakesQ(Snakes):
         self._vision_pos = self.pos_from_xy(vision.x, vision.y)
         self._eat_frame = np_empty(self.nr_snakes, TYPE_MOVES)
 
+        # Make sure the user entered sane values
         if wall_left  < 0: raise(ValueError("wall_left must not be negative"))
         if wall_right < 0: raise(ValueError("wall_right must not be negative"))
         if wall_up    < 0: raise(ValueError("wall_up must not be negative"))
         if wall_down  < 0: raise(ValueError("wall_down must not be negative"))
+
+        # No need to look at walls farther than the pit size
+        wall_left  = min(wall_left,  self.WIDTH)
+        wall_right = min(wall_right, self.WIDTH)
+        wall_up    = min(wall_up,    self.HEIGHT)
+        wall_down  = min(wall_down,  self.HEIGHT)
+
+        # No need to look at walls if their distance is known
+        if self.WIDTH == 1:
+            wall_left  = 0
+            wall_right = 0
+        if self.HEIGHT == 1:
+            wall_up   = 0
+            wall_down = 0
+
         self._wall_left  = wall_left
         self._wall_right = wall_right
         self._wall_up    = wall_up
         self._wall_down  = wall_down
 
-        wall_x = np.zeros(self.WIDTH1, SnakesQ.TYPE_QTABLE)
+        wall_x = np.zeros(self.WIDTH1, SnakesQ.TYPE_QSTATE)
         # If we VERY carefully consider all case we don't need the dict() method
         # But that would be much less obvious with all the corner cases
         wall_seen_x = dict()
@@ -1830,7 +1869,7 @@ class SnakesQ(Snakes):
             wall_x[self.VIEW_X + x] = wall_seen_x[left, right]
         # print(wall_x)
 
-        wall_y = np.zeros(self.HEIGHT1, SnakesQ.TYPE_QTABLE)
+        wall_y = np.zeros(self.HEIGHT1, SnakesQ.TYPE_QSTATE)
         wall_seen_y = dict()
         # Try to give a spot out of view of the walls index 0
         normal_up  = min(wall_up, self.HEIGHT-1)
@@ -1850,7 +1889,7 @@ class SnakesQ(Snakes):
             # Just to make self._wall1 print nicer set the outer edge to nr states
             # Makes no difference since you should never access the edge
             self._wall1 *= self._pit_flag
-            self._wall1 += self._pit_empty * SnakesQ.TYPE_QTABLE(self.NR_STATES_WALL)
+            self._wall1 += self._pit_empty * SnakesQ.TYPE_QSTATE(self.NR_STATES_WALL)
             # And avoid needing to do the apple multiplier:
             self._wall1 *= SnakesQ.NR_STATES_APPLE
             self._wall = self._wall1.reshape(self._wall1.size)
@@ -1869,12 +1908,25 @@ class SnakesQ(Snakes):
         sys.stdout.flush()
 
         # The previous test made sure this won't overflow
-        self.neighbour_multiplier = np.expand_dims(1 << np.arange(0, nr_neighbours, 8, dtype=SnakesQ.TYPE_QTABLE), axis=1) * (SnakesQ.NR_STATES_APPLE * self.NR_STATES_WALL)
-        if self.neighbour_multiplier.dtype != SnakesQ.TYPE_QTABLE:
+        self.neighbour_multiplier = np.expand_dims(1 << np.arange(0, nr_neighbours, 8, dtype=SnakesQ.TYPE_QSTATE), axis=1) * (SnakesQ.NR_STATES_APPLE * self.NR_STATES_WALL)
+        if self.neighbour_multiplier.dtype != SnakesQ.TYPE_QSTATE:
             raise(AssertionError("Unexpected neighbour multiplier dtype"))
 
     def run_start_extra(self, display):
         self._q_table.fill(SnakesQ.REWARD0)
+
+        # Prefill obvious collisions
+        if self._accelerated:
+            n = np.arange(self.NR_STATES_NEIGHBOUR, dtype=SnakesQ.TYPE_QSTATE)
+            n = n.repeat(SnakesQ.NR_STATES_APPLE * self.NR_STATES_WALL)
+            for d, (x, y) in enumerate(zip(np.nditer(Snakes.DIRECTIONS0_X), np.nditer(Snakes.DIRECTIONS0_Y))):
+                pos = y+0, x+0
+                if pos in self._vision_obj:
+                    i = self._vision_obj[y+0, x+0]
+                    bit = 1 << i
+                    hit = (n & bit) == bit
+                    self._q_table[hit,d] = SnakesQ.REWARD_CRASH
+
         self._eat_frame.fill(self.frame())
         #self._q_table = np.array(
         #    np.random.uniform(SnakesQ.REWARD0-SnakesQ.REWARD_RAND,
@@ -1997,7 +2049,7 @@ class SnakesQ(Snakes):
         neighbour_state = neighbours_packed * self.neighbour_multiplier
         if len(neighbour_state > 1):
             neighbour_state = np.sum(neighbour_state,
-                                     axis=0, dtype=SnakesQ.TYPE_QTABLE)
+                                     axis=0, dtype=SnakesQ.TYPE_QSTATE)
         else:
             neighbour_state = np.squeeze(neighbour_state, axis=0)
         # if debug: print("Neigbour state", neighbour_state / SnakesQ.NR_STATES_APPLE)
@@ -2029,15 +2081,20 @@ class SnakesQ(Snakes):
             state = neighbour_state + apple_state
 
         if debug:
-            print("Apple state[0]:", apple_state[0])
-            print("Wall state[0]:", wall_state[0] / SnakesQ.NR_STATES_APPLE if self.NR_STATES_WALL > 1 else None)
-            print("Neigbour state[0]:",
-                  neighbour_state[0] / (SnakesQ.NR_STATES_APPLE * self.NR_STATES_WALL))
+            print("Apple state[%d]:" % self._debug_index,
+                  apple_state[self._debug_index])
+            print("Wall state[%d]:" % self._debug_index,
+                  wall_state[self._debug_index] / SnakesQ.NR_STATES_APPLE if self.NR_STATES_WALL > 1 else None)
+            print("Neigbour state[%d]:" % self._debug_index,
+                  neighbour_state[self._debug_index] / (SnakesQ.NR_STATES_APPLE * self.NR_STATES_WALL))
 
         if debug:
             print(self._vision_obj.string(final_newline = False, flags = neighbours[:,0]))
         # if debug: print("State", state)
-        if debug: print("Old State[0]", None if is_eat is None else self._state[0], "New State[0]", state[0])
+        if debug:
+            print("Old State[%d]" % self._debug_index,
+                  None if is_eat is None else self._state[self._debug_index],
+                  "New State[%d]" % self._debug_index, state[self._debug_index])
 
         # Evaluate the previous move
         if is_eat is not None:
@@ -2051,9 +2108,10 @@ class SnakesQ(Snakes):
             r = np.random.uniform(-SnakesQ.REWARD_RAND,
                                   +SnakesQ.REWARD_RAND)
             if debug:
-                print("Qrow[0] before:", q_row[0])
+                print("Qrow[%d] before:" % self._debug_index,
+                      q_row[self._debug_index])
                 #print("base r:", r)
-                #print("rand r[0]:", rewards[0])
+                #print("rand r[%d]:" % self._debug_index, rewards[self._debug_index])
             rewards += SnakesQ.REWARD_MOVE + r
             rewards[move_result.eaten]    += SnakesQ.REWARD_APPLE
             # eaten at this point contains collided, so compensate by an apple
@@ -2063,34 +2121,44 @@ class SnakesQ(Snakes):
                 rewards[move_result.won] -= SnakesQ.REWARD_CRASH - SnakesQ.REWARD_APPLE
             # move_result.print()
             # print("Rewards", rewards)
-            if debug: print("Rewards[0]", rewards[0])
+            if debug:
+                print("Rewards[%d]" % self._debug_index,
+                      rewards[self._debug_index])
             advantage = np.amax(q_row, axis=-1) * self._discount
             advantage[move_result.collided] = 0
             advantage -= self._q_table[self._state, self._action]
             # print("Advantage", advantage)
-            if debug: print("Advantage[0]", advantage[0])
+            if debug:
+                print("Advantage[%d]" % self._debug_index,
+                      advantage[self._debug_index])
             rewards += advantage
             # print("Update", rewards)
             rewards *= self._learning_rate
             if debug:
-                print("Q old", self._q_table[self._state[0]])
-                print("Update0[%d][%d]" % (self._state[0], self._action[0]), rewards[0])
+                print("Q old", self._q_table[self._state[self._debug_index]])
+                print("Update0[%d][%d]" % (self._state[self._debug_index],
+                                           self._action[self._debug_index]),
+                      rewards[self._debug_index])
             # Potentially need to multi-update the same position, so use ads.at
             np.add.at(self._q_table, (self._state, self._action), rewards)
             if debug:
-                print("Q new", self._q_table[self._state[0]])
+                print("Q new", self._q_table[self._state[self._debug_index]])
             #if np.isnan(self._q_table).any():
             #    raise(AssertionError("Q table contains nan"))
 
         # Decide what to do
         q_row = self._q_table[state]
         if debug:
-            print("Qrow[0] after: ", q_row[0])
-        # print("Current Q_row[0]", q_row[0])
+            print("Qrow[%d] after: " % self._debug_index,
+                  q_row[self._debug_index])
         action = q_row.argmax(axis=-1)
         if debug:
-            print("Old Action[0]", None if is_eat is None else self._action[0],
-                  "New action[0]", action[0], "Moves since apple[0]", self.frame() - self._eat_frame[0])
+            print("Old Action[%d]" % self._debug_index,
+                  None if is_eat is None else self._action[self._debug_index],
+                  "New action[%d]" % self._debug_index,
+                  action[self._debug_index],
+                  "Moves since apple[%d]" % self._debug_index,
+                  self.frame() - self._eat_frame[self._debug_index])
 
         looping = self._eat_frame <= self.frame() - SnakesQ.LOOP_MAX * self.AREA
         looping = looping.nonzero()[0]
@@ -2177,13 +2245,14 @@ wall       = int(arguments["--wall"])
 learning_rate = float(arguments["--learning-rate"])
 discount      = float(arguments["--discount"])
 snakes = SnakesQ(nr_snakes = nr_snakes,
-                 debug     = arguments["--debug"],
-                 width     = int(arguments["--width"]),
-                 height    = int(arguments["--height"]),
-                 frame_max = int(arguments["--frames"]),
-                 log_file  = arguments["--log-file"],
-                 wall_left = wall, wall_right = wall,
-                 wall_up   = wall, wall_down = wall,
+                 accelerated = arguments["--accelerated"],
+                 debug       = arguments["--debug"],
+                 width       = int(arguments["--width"]),
+                 height      = int(arguments["--height"]),
+                 frame_max   = int(arguments["--frames"]),
+                 log_file    = arguments["--log-file"],
+                 wall_left   = wall, wall_right = wall,
+                 wall_up     = wall, wall_down = wall,
                  learning_rate = learning_rate, discount = discount,
                  **snake_kwargs)
 
