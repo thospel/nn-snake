@@ -94,6 +94,8 @@ import itertools
 import collections.abc
 import time
 import numpy as np
+import numpy.ma as ma
+
 np.set_printoptions(floatmode="fixed", precision=10, suppress=True)
 
 import os
@@ -615,6 +617,16 @@ def print_yx(text, pos):
     print_xy(text, pos[1], pos[0])
 
 
+# +
+# (Intentionally) crashes if any length is 0
+def shape_any(object):
+    shape = []
+    while isinstance(object, collections.abc.Sized) and not isinstance(object, str):
+        shape.append(len(object))
+        object = object[0]
+    return shape
+
+
 # -
 # TYPE_POS = np.uint8
 TYPE_POS   = np.int16
@@ -640,6 +652,26 @@ TYPE_GAMES = np.uint32
 
 @dataclass
 class Vision(dict):
+    VISION4       = """
+      *
+    * O *
+      *
+    """
+
+    VISION8       = """
+    * * *
+    * O *
+    * * *
+    """
+
+    VISION12       = """
+      *
+    * * *
+  * * O * *
+    * * *
+      *
+    """
+
     x:     np.ndarray
     y:     np.ndarray
     min_x: TYPE_POS
@@ -647,7 +679,7 @@ class Vision(dict):
     min_y: TYPE_POS
     max_y: TYPE_POS
 
-    def __init__(self, str):
+    def __init__(self, str, shuffle = False):
         super().__init__()
         head_x = None
         head_y = None
@@ -695,13 +727,18 @@ class Vision(dict):
             raise(ValueError("Field has odd distance from head"))
         vision_x //= 2
 
-        # Order by taxi distance and angle
-        taxi  = abs(vision_x) + abs(vision_y)
-        angle = np.arctan2(-vision_y, vision_x) % (2 * np.pi)
-        order = np.lexsort((angle, taxi))
+        if shuffle:
+            order = np.arange(vision_x.shape[0])
+            np.random.shuffle(order)
+        else:
+            # Order by distance and angle
+            distance2  = vision_x * vision_x + vision_y * vision_y
+            angle = np.arctan2(-vision_y, vision_x) % (2 * np.pi)
+            order = np.lexsort((angle, distance2))
+            # order = np.lexsort((angle, distance2 > 2))
+
         vision_x = vision_x[order]
         vision_y = vision_y[order]
-
         self.x = vision_x
         self.y = vision_y
 
@@ -714,32 +751,57 @@ class Vision(dict):
             self[y+0, x+0] = i
 
 
-    def string(self, final_newline = True, flags = None, indent = ""):
-        str = ""
-        for y in range(self.min_y, self.max_y + 1):
-            if y != self.min_y:
-                str += "\n"
-            spaces = indent
-            for x in range(self.min_x, self.max_x+1):
-                if x == 0 and y == 0:
-                    if flags is None:
-                        str += spaces + "O"
-                    else:
-                        str += spaces + "#"
-                elif (y, x) in self:
-                    str += spaces
-                    if flags is None:
-                        str += "*"
-                    elif flags[self[y, x]]:
-                        str += "1"
-                    else:
-                        str += "0"
-                    spaces = " "
-                else:
-                    spaces += "  "
+    def string(self, final_newline = True, values = None, indent = "", separator = "    "):
+        if values is None:
+            rows = 1
+            cols = 1
+        else:
+            shape = shape_any(values)
+            if len(shape) == 1:
+                rows = 1
+                cols = 1
+                values = [[values]]
+            elif len(shape) == 2:
+                rows = 1
+                cols = shape[0]
+                values = [values]
+            elif len(shape) == 3:
+                rows = shape[0]
+                cols = shape[1]
+            else:
+                raise(AssertionError("Invalid shape"))
+
+        out = ""
+        for r in range(rows):
+            for y in range(self.min_y, self.max_y + 1):
+                if y != self.min_y:
+                    out += "\n"
+                spaces = indent
+                for c in range(cols):
+                    for x in range(self.min_x, self.max_x+1):
+                        if x == 0 and y == 0:
+                            if values is None:
+                                out += spaces + "O"
+                            else:
+                                out += spaces + "#"
+                        elif (y, x) in self:
+                            out += spaces
+                            if values is None:
+                                out += "*"
+                            else:
+                                v = str(values[r][c][self[y, x]])
+                                if v == "False":
+                                    v = "0"
+                                elif v == "True":
+                                    v = "1"
+                                out += v
+                            spaces = " "
+                        else:
+                            spaces += "  "
+                    spaces = spaces[:-1] + separator
         if final_newline:
-            str += "\n";
-        return str
+            out += "\n";
+        return out
 
 class VisionFile(Vision):
     def __init__(self, file):
@@ -774,10 +836,14 @@ class Snakes:
     ROTATION = np.array([[0,1],[-1,0]], dtype=TYPE_POS)
     # In python 3.8 we will get the ability to use "initial" so the
     # awkward "append" can be avoided
+    # ROTATIONS will be 4 rotation matrices each rotating one more to the left
+    # (negative y is up). The first one is the identity
     ROTATIONS = np.array(list(itertools.accumulate(
         np.append(np.expand_dims(np.identity(2), axis=0),
                   np.expand_dims(ROTATION, axis=0).repeat(3,axis=0), axis=0),
         np.matmul)), dtype=TYPE_POS)
+    # Inverse ROTATIONS
+    ROTATIONS_INV = ROTATIONS[-np.arange(4)]
     # Next will set DIRECTIONS0 to all directions:
     # [[ 1  0]
     #  [ 0 -1]
@@ -803,7 +869,6 @@ class Snakes:
     # 5 1 4          8 0 2
     # 2 8 0    so    3 7 6
     # 6 3 7          1 4 5
-    # DIRECTION8_ID = np.array([[8, 0, 2], [3, 7, 6], [1, 4, 5]], dtype=np.uint8)
     DIRECTION8_ID = np.empty((3,3), dtype=np.uint8)
     DIRECTION8_X = np.empty(DIRECTION8_ID.size, dtype=TYPE_POS)
     DIRECTION8_Y = np.empty(DIRECTION8_ID.size, dtype=TYPE_POS)
@@ -814,6 +879,114 @@ class Snakes:
     DIRECTION8_X[8]   = 0
     DIRECTION8_Y[8]   = 0
     DIRECTION8_ID[DIRECTION8_Y, DIRECTION8_X] = np.arange(DIRECTION8_ID.size)
+
+    # Does it need to mirror about the x-axis to get into quadrant 1 and 2
+    # (-1, 0) is assigned to "mirror" for symmetry, negative y is "up"
+    MIRROR8 = (DIRECTION8_Y > 0) | (DIRECTION8_Y == 0) & (DIRECTION8_X < 0)
+    # Rotation lookup table:
+    #     Rows are snake directions as defined by DIRECTIONS0
+    #     Columns are (x,y) deltas for directions defined by DIRECTION8_ID
+    DIRECTION8_ROTATIONS = ROTATIONS[-np.arange(NR_DIRECTIONS)] @ np.stack((DIRECTION8_X, DIRECTION8_Y), axis=0)
+    # dihedral lookup table: Do we need to mirror to put the apple to the left ?
+    #     Rows    are snake directions as defined by DIRECTIONS0
+    #     Columns are apple directions as defined by DIRECTION8_ID
+    MIRROR_DIRECTION8 = MIRROR8[DIRECTION8_ID[DIRECTION8_ROTATIONS[:,1],
+                                              DIRECTION8_ROTATIONS[:,0]]]
+
+    MIRROR_Y = np.diag(np.array([1,-1], dtype=TYPE_POS))
+    # Symmetry group of the square (dihedral group).
+    # First 4 rotations, then 4 mirrored versions
+    ROTATIONS_DH = np.append(ROTATIONS, ROTATIONS @ MIRROR_Y, axis=0)
+    # Inverse of ROTATIONS_DH
+    ROTATIONS_DH_INV = np.append(ROTATIONS_INV, MIRROR_Y @ ROTATIONS_INV, axis=0)
+    # Check that the rotations are each others inverse
+    # print(np.einsum("ijk,ikl -> ijl", ROTATIONS_DH, ROTATIONS_DH_INV))
+    # print(np.einsum("ijk,ikl -> ijl", ROTATIONS_DH_INV, ROTATIONS_DH))
+
+    # ROTATIONS_DIRECTION8_ID[snake dir, apple dir Y, apple dir X] gives
+    # the id in ROTATIONS_DH that must be aplied to rightward facing snake
+    # with the apple to the left to get to that configuration
+    # Contents will be:
+    #     0 0 4     1 5 1     2 6 2     3 3 7
+    #     4 4 4     5 5 1     2 2 2     3 3 7
+    #     0 0 0     1 5 1     6 6 6     7 3 7
+    ROTATIONS_DIRECTION8_ID = np.arange(NR_DIRECTIONS).reshape(-1,1,1) + MIRROR_DIRECTION8[:,DIRECTION8_ID]*4
+    # print(ROTATIONS_DH_INV)
+    # print(ROTATIONS_DIRECTION8_ID)
+    # print(ROTATIONS_DH_INV[ROTATIONS_DIRECTION8_ID])
+    # ROTATED_DIRECTION8 maps apple directions from before to after rotation
+    #     Axis 0: select x or y coordinate of output direction
+    #     Axis 1: snake direction as defined by DIRECTIONS0
+    #     Axis 2: y of apple direction
+    #     Axis 2: x of apple direction
+    ROTATED_DIRECTION8 = np.einsum(
+        "nyxij,yxj -> inyx",
+        ROTATIONS_DH_INV[ROTATIONS_DIRECTION8_ID],
+        np.stack((DIRECTION8_X, DIRECTION8_Y), axis=1)[DIRECTION8_ID])
+
+    # LEFT8 will start with the 5 directions facing left
+    # LEFT8 = [0 1 2 4 5 3 6 7 8]
+    TAXI8  = abs(DIRECTION8_X) + abs(DIRECTION8_Y)
+    ANGLE8 = np.arctan2(-DIRECTION8_Y, DIRECTION8_X) % (2 * np.pi)
+    LEFT8  = np.lexsort((ANGLE8, TAXI8, DIRECTION8_Y > 0, TAXI8 == 0))
+
+    # LEFT8_INV is the inverted permutation of LEFT8,
+    # Given a direction id it returns the index in LEFT
+    LEFT8_INV = np.lexsort((LEFT8,))
+
+    # ROTATED_LEFT8 maps apple directions to apple state id (index in LEFT8)
+    #     Axis 0: snake direction as defined by DIRECTIONS0
+    #     Axis 1: y of apple direction
+    #     Axis 2: x of apple direction
+    # Actual result:
+    #   8 0 2     8 1 1     8 2 0     8 1 1
+    #   1 3 4     2 4 4     1 4 3     0 3 3
+    #   1 3 4     0 3 3     1 4 3     2 4 4
+    ROTATED_LEFT8 = LEFT8_INV[DIRECTION8_ID[ROTATED_DIRECTION8[1],ROTATED_DIRECTION8[0]]]
+    # print(ROTATED_LEFT8)
+
+    # The state id will be restricted to [0..4] if we did everything right
+    # (3 directions to the left, forward and backward)
+    ROTATED_LEFT8_MASK = np.zeros(ROTATED_LEFT8.shape, dtype=np.bool)
+    ROTATED_LEFT8_MASK[:,0,0] = True
+    # So any direction result strictly to the right is a bug
+    # Except that index (0,0) is not a direction we should ever see, so mask it
+    if (ma.masked_array(ROTATED_LEFT8, ROTATED_LEFT8_MASK) > 4).any():
+        raise(AssertionError("dihedral symmetry left something right"))
+    if True:
+        # Check that all matrices work by displaying all symmetries
+        # for manual inspection
+        # VISION8 is good enough to show all symmetries, but then the
+        # number of points is equal to the number of directions making it
+        # much easier to mix up indices. So I use VISION12 instead
+        V = Vision(Vision.VISION12, shuffle = True)
+
+        # Make order different from the standard order in DIRECTION8
+        # This debugs that we do the proper extra indexing
+        if False:
+            # Random
+            order = np.arange(8)
+            np.random.shuffle(order)
+        else:
+            # Counter clockwise
+            order = np.lexsort((ANGLE8[0:8],))
+        Dx = np.sign(DIRECTION8_X[order])
+        Dy = np.sign(DIRECTION8_Y[order])
+        # print_xy("Delta", Dx, Dy)
+        D = np.full((8,V.max_y-V.min_y+1,V.max_x-V.min_x+1), ".", dtype=str)
+        D[:,V.y, V.x] = "*"
+        D[:,0,0] = "E"
+        D[:,np.array([0,1,-1]).reshape(3,1),[0,1,-1]] = DIRECTION8_ID.astype(str)
+        D[range(8), Dy % D.shape[1], Dx % D.shape[2]] = "@"
+        print(V.string(values=D[:,V.y,V.x]))
+
+        C = np.stack((V.x, V.y),axis=0)
+        # matmul gives (rotation id, xy, vision i)
+        P = ROTATIONS_DH @ C
+        for n in range(4):
+            pts = P[ROTATIONS_DIRECTION8_ID[n, Dy, Dx]]
+            print(V.string(values=D[np.arange(8).reshape(-1,1), pts[:,1], pts[:,0]]))
+            print(LEFT8[ROTATED_LEFT8[n,Dy,Dx]])
 
     VIEW_X0 = 1
     VIEW_Y0 = 1
@@ -1238,7 +1411,7 @@ class Snakes:
         abs_dy = np.abs(dy)
         dir_x = abs_dx > abs_dy
         dx = np.where(dir_x, np.sign(dx), 0)
-        dy = np.where(dir_x, 0,          np.sign(dy))
+        dy = np.where(dir_x, 0,           np.sign(dy))
         # Diag is mainly meant to detect dx == dy == 0
         # But is also debugs *some* diagonal moves
         diag = dx == dy
@@ -1694,7 +1867,7 @@ class Snakes:
                     self.dump(self._dump_file)
                     if self.debug:
                         print("Dumped to", self._dump_file, flush=True)
-                elif key == "q":
+                elif key == "Q":
                     return False
                 elif self.debug:
                     print("Unknown key <%s>" % key)
@@ -1779,19 +1952,13 @@ class SnakesQ(Snakes):
     # LOOP is in units of AREA
     LOOP_MAX      = 2
     LOOP_ESCAPE   = 1
-
-    VISION        = Vision("""
-      *
-    * O *
-      *
-    """)
     NR_STATES_APPLE = 8
     NR_STATES_MAX = np.iinfo(TYPE_QSTATE).max
 
     def __init__(self, *args,
                  view_x = None, view_y = None,
                  xy_head = False,
-                 vision = VISION,
+                 vision = None,
                  wall_left = 0, wall_right = 0, wall_up = 0, wall_down = 0,
                  learning_rate = float(DEFAULTS["--learning-rate"]),
                  discount      = float(DEFAULTS["--discount"]),
@@ -1799,6 +1966,8 @@ class SnakesQ(Snakes):
                  **kwargs):
 
         self._accelerated = accelerated
+        if vision is None:
+            vision = Vision(Vision.VISION4)
         if view_x is None:
             view_x = max(Snakes.VIEW_X0, -np.amin(vision.x), np.amax(vision.x))
         if view_y is None:
@@ -1918,14 +2087,18 @@ class SnakesQ(Snakes):
         # Prefill obvious collisions
         if self._accelerated:
             n = np.arange(self.NR_STATES_NEIGHBOUR, dtype=SnakesQ.TYPE_QSTATE)
-            n = n.repeat(SnakesQ.NR_STATES_APPLE * self.NR_STATES_WALL)
+            # Have a per neighbour view for fast neighbour selection
+            q_table = self._q_table.reshape((self.NR_STATES_NEIGHBOUR, SnakesQ.NR_STATES_APPLE * self.NR_STATES_WALL, Snakes.NR_DIRECTIONS))
+            if q_table.base is not self._q_table:
+                raise(AssertionError("q_table is a copy instead of a view"))
+
             for d, (x, y) in enumerate(zip(np.nditer(Snakes.DIRECTIONS0_X), np.nditer(Snakes.DIRECTIONS0_Y))):
                 pos = y+0, x+0
                 if pos in self._vision_obj:
                     i = self._vision_obj[y+0, x+0]
-                    bit = 1 << i
+                    bit = SnakesQ.TYPE_QSTATE(1 << i)
                     hit = (n & bit) == bit
-                    self._q_table[hit,d] = SnakesQ.REWARD_CRASH
+                    q_table[hit,:,d] = SnakesQ.REWARD_CRASH
 
         self._eat_frame.fill(self.frame())
         #self._q_table = np.array(
@@ -1945,7 +2118,7 @@ class SnakesQ(Snakes):
             if self._q_table[min_i:max_i].any():
                 print("NState: %*d" % (state_max_len, neighbour_state), file=fh)
                 print(self._vision_obj.string(final_newline = False,
-                                              flags = bits),
+                                              values = bits),
                       file = fh)
                 for i in range(min_i, max_i, SnakesQ.NR_STATES_APPLE):
                     q_range = self._q_table[i:i+SnakesQ.NR_STATES_APPLE]
@@ -2089,7 +2262,7 @@ class SnakesQ(Snakes):
                   neighbour_state[self._debug_index] / (SnakesQ.NR_STATES_APPLE * self.NR_STATES_WALL))
 
         if debug:
-            print(self._vision_obj.string(final_newline = False, flags = neighbours[:,0]))
+            print(self._vision_obj.string(final_newline = False, values = neighbours[:,0]))
         # if debug: print("State", state)
         if debug:
             print("Old State[%d]" % self._debug_index,
