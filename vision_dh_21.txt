@@ -1,0 +1,8 @@
+# Snake sees all up to distance 3
+    *
+  * * *
+* * * * *
+    O * * *
+* * * * *
+  * * *
+    *

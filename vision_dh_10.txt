@@ -1,0 +1,6 @@
+# Snake sees all in distance 2
+    *
+  * * *
+    O * *
+  * * *
+    *

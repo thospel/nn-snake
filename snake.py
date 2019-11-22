@@ -20,7 +20,7 @@ Usage:
   snake.py [-f <file>] [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
            [--width=<width>] [--height=<height>] [--frames=<frames>]
            [--columns=columns] [--rows=rows] [--block=<block_size>]
-           [--wall=<wall>]
+           [--wall=<wall>] [--symmetry]
            [--vision-file=<file>] [--dump-file=<file>] [--log-file=<log>]
            [--learning-rate=<r>] [--discount <ratio>] [--accelerated]
   snake.py --benchmark
@@ -43,6 +43,7 @@ Options:
   --benchmark             Run a simple speed benchmark
   --wall=<wall>           Have state for distance from wall up to <wall>
                           [Default: 2]
+  --symmetry              Apply dihedral symmetry
   --vision-file=<file>    Read snake vision from file
   --log-file=<file>       Write to logfile. Use an empty string if you
                           explicitely don't want any logging
@@ -628,12 +629,14 @@ def shape_any(object):
 
 
 # -
-# TYPE_POS = np.uint8
+# TYPE_POS needs to be signed since we also use it for vectors relative to (0,0)
 TYPE_POS   = np.int16
+# TYPE_ID needs to be signed
+# (Since we also use TYPE_ID to set mirror to -1 or 1 and direction ID to -1)
+TYPE_ID    = np.int8
 TYPE_BOOL  = np.bool
 TYPE_INDEX = np.intp
-# Using bool for TYPE_FLAG is about 5% faster
-# TYPE_FLAG  = np.uint8
+# Using bool for TYPE_FLAG in field is about 5% faster than uint8
 TYPE_FLAG  = np.bool
 TYPE_SCORE = np.uint32
 TYPE_MOVES = np.uint32
@@ -655,6 +658,12 @@ class Vision(dict):
     VISION4       = """
       *
     * O *
+      *
+    """
+
+    VISION_DH3    = """
+      *
+      O *
       *
     """
 
@@ -784,6 +793,7 @@ class Vision(dict):
                                 out += spaces + "O"
                             else:
                                 out += spaces + "#"
+                            spaces = " "
                         elif (y, x) in self:
                             out += spaces
                             if values is None:
@@ -858,18 +868,19 @@ class Snakes:
     DIAGONALS0_X = DIAGONALS0[:,0]
     DIAGONALS0_Y = DIAGONALS0[:,1]
 
-    DIRECTION_PERMUTATIONS0   = np.array(list(itertools.permutations(DIRECTIONS0)), dtype=TYPE_POS)
-    NR_DIRECTION_PERMUTATIONS = len(DIRECTION_PERMUTATIONS0)
-    DIRECTION_PERMUTATIONS0_X = DIRECTION_PERMUTATIONS0[:,:,0]
-    DIRECTION_PERMUTATIONS0_Y = DIRECTION_PERMUTATIONS0[:,:,1]
-
-    DIRECTION_INDEX_PERMUTATIONS = np.array(list(itertools.permutations(range(NR_DIRECTIONS))), dtype=TYPE_POS)
+    DIRECTION4_PERMUTATIONS   = np.array(list(itertools.permutations(DIRECTIONS0)), dtype=TYPE_POS)
+    NR_DIRECTION4_PERMUTATIONS = len(DIRECTION4_PERMUTATIONS)
+    DIRECTION4_PERMUTATIONS_X = DIRECTION4_PERMUTATIONS[:,:,0]
+    DIRECTION4_PERMUTATIONS_Y = DIRECTION4_PERMUTATIONS[:,:,1]
+    DIRECTION4_ID_PERMUTATIONS = np.array(list(itertools.permutations(range(NR_DIRECTIONS))), dtype=TYPE_ID)
+    DIRECTION3_ID_PERMUTATIONS = np.array(list(itertools.permutations(range(3))), dtype=TYPE_ID)
+    NR_DIRECTION3_PERMUTATIONS = len(DIRECTION3_ID_PERMUTATIONS)
 
     # Construct the left array with -1 based indexing, so really the right one
     # 5 1 4          8 0 2
     # 2 8 0    so    3 7 6
     # 6 3 7          1 4 5
-    DIRECTION8_ID = np.empty((3,3), dtype=np.uint8)
+    DIRECTION8_ID = np.empty((3,3), dtype=TYPE_ID)
     DIRECTION8_X = np.empty(DIRECTION8_ID.size, dtype=TYPE_POS)
     DIRECTION8_Y = np.empty(DIRECTION8_ID.size, dtype=TYPE_POS)
     DIRECTION8_X[0:4] = DIRECTIONS0_X
@@ -892,6 +903,8 @@ class Snakes:
     #     Columns are apple directions as defined by DIRECTION8_ID
     MIRROR_DIRECTION8 = MIRROR8[DIRECTION8_ID[DIRECTION8_ROTATIONS[:,1],
                                               DIRECTION8_ROTATIONS[:,0]]]
+    # Mirror lookup table: did_mirror = MIRROR8_DH[snake dir, dy, dx]
+    MIRROR8_DH = MIRROR_DIRECTION8[:,DIRECTION8_ID]
 
     MIRROR_Y = np.diag(np.array([1,-1], dtype=TYPE_POS))
     # Symmetry group of the square (dihedral group).
@@ -910,7 +923,8 @@ class Snakes:
     #     0 0 4     1 5 1     2 6 2     3 3 7
     #     4 4 4     5 5 1     2 2 2     3 3 7
     #     0 0 0     1 5 1     6 6 6     7 3 7
-    ROTATIONS_DIRECTION8_ID = np.arange(NR_DIRECTIONS).reshape(-1,1,1) + MIRROR_DIRECTION8[:,DIRECTION8_ID]*4
+    ROTATIONS_DIRECTION8_ID = (np.arange(NR_DIRECTIONS).reshape(-1,1,1) + MIRROR_DIRECTION8[:,DIRECTION8_ID]*4).astype(TYPE_ID)
+
     # print(ROTATIONS_DH_INV)
     # print(ROTATIONS_DIRECTION8_ID)
     # print(ROTATIONS_DH_INV[ROTATIONS_DIRECTION8_ID])
@@ -928,11 +942,11 @@ class Snakes:
     # LEFT8 = [0 1 2 4 5 3 6 7 8]
     TAXI8  = abs(DIRECTION8_X) + abs(DIRECTION8_Y)
     ANGLE8 = np.arctan2(-DIRECTION8_Y, DIRECTION8_X) % (2 * np.pi)
-    LEFT8  = np.lexsort((ANGLE8, TAXI8, DIRECTION8_Y > 0, TAXI8 == 0))
+    LEFT8  = np.lexsort((ANGLE8, TAXI8, DIRECTION8_Y > 0, TAXI8 == 0)).astype(TYPE_ID)
 
     # LEFT8_INV is the inverted permutation of LEFT8,
     # Given a direction id it returns the index in LEFT
-    LEFT8_INV = np.lexsort((LEFT8,))
+    LEFT8_INV = np.lexsort((LEFT8,)).astype(TYPE_ID)
 
     # ROTATED_LEFT8 maps apple directions to apple state id (index in LEFT8)
     #     Axis 0: snake direction as defined by DIRECTIONS0
@@ -943,6 +957,7 @@ class Snakes:
     #   1 3 4     2 4 4     1 4 3     0 3 3
     #   1 3 4     0 3 3     1 4 3     2 4 4
     ROTATED_LEFT8 = LEFT8_INV[DIRECTION8_ID[ROTATED_DIRECTION8[1],ROTATED_DIRECTION8[0]]]
+    assert ROTATED_LEFT8.dtype == TYPE_ID
     # print(ROTATED_LEFT8)
 
     # The state id will be restricted to [0..4] if we did everything right
@@ -953,7 +968,7 @@ class Snakes:
     # Except that index (0,0) is not a direction we should ever see, so mask it
     if (ma.masked_array(ROTATED_LEFT8, ROTATED_LEFT8_MASK) > 4).any():
         raise(AssertionError("dihedral symmetry left something right"))
-    if True:
+    if False:
         # Check that all matrices work by displaying all symmetries
         # for manual inspection
         # VISION8 is good enough to show all symmetries, but then the
@@ -963,7 +978,7 @@ class Snakes:
 
         # Make order different from the standard order in DIRECTION8
         # This debugs that we do the proper extra indexing
-        if False:
+        if True:
             # Random
             order = np.arange(8)
             np.random.shuffle(order)
@@ -987,6 +1002,13 @@ class Snakes:
             pts = P[ROTATIONS_DIRECTION8_ID[n, Dy, Dx]]
             print(V.string(values=D[np.arange(8).reshape(-1,1), pts[:,1], pts[:,0]]))
             print(LEFT8[ROTATED_LEFT8[n,Dy,Dx]])
+            print(MIRROR8_DH[n,Dy,Dx])
+
+    # Combined lookup:
+    # (DH_ID, APPLE_STATE) = SYMMETRY8_DH[snake dir, delta Y, delta X]
+    SYMMETRY8_DH = np.stack((ROTATIONS_DIRECTION8_ID, ROTATED_LEFT8, np.array([1,-1], dtype=TYPE_ID)[MIRROR8_DH+0]), axis=-1)
+    assert SYMMETRY8_DH.dtype == TYPE_ID
+    # print(SYMMETRY8_DH)
 
     VIEW_X0 = 1
     VIEW_Y0 = 1
@@ -1058,13 +1080,13 @@ class Snakes:
         self.DIRECTIONS = self.pos_from_xy(Snakes.DIRECTIONS0_X,
                                            Snakes.DIRECTIONS0_Y)
         self.DIRECTION_PERMUTATIONS = self.pos_from_xy(
-            Snakes.DIRECTION_PERMUTATIONS0_X,
-            Snakes.DIRECTION_PERMUTATIONS0_Y)
+            Snakes.DIRECTION4_PERMUTATIONS_X,
+            Snakes.DIRECTION4_PERMUTATIONS_Y)
 
         # Table of all positions inside the pit
         x0 = np.arange(self.VIEW_X, self.VIEW_X+self.WIDTH,  dtype=TYPE_POS)
         y0 = np.arange(self.VIEW_Y, self.VIEW_Y+self.HEIGHT, dtype=TYPE_POS)
-        all0 = self.pos_from_xy(x0, y0.reshape(self.HEIGHT,1))
+        all0 = self.pos_from_xy(x0, y0.reshape(-1, 1))
         # self.print_pos("All", all0)
         self._all0 = all0.flatten()
         # self.print_pos("All", self._all0)
@@ -1081,11 +1103,9 @@ class Snakes:
         # (This makes interpreting printouts a lot easier)
         self._field1 = self._pit_empty.reshape(1,self.HEIGHT1,self.WIDTH1).repeat(nr_snakes, axis=0)
         self._field0 = self._field1[:, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH]
-        if self._field0.base is not self._field1:
-            raise(AssertionError("field0 is a copy instead of a view"))
+        assert self._field0.base is self._field1
         self._field = self._field1.reshape(nr_snakes, self.HEIGHT1*self.WIDTH1)
-        if self._field.base is not self._field1:
-            raise(AssertionError("field is a copy instead of a view"))
+        assert self._field.base is self._field1
 
         # self._apple_pit = np.zero((self.HEIGHT, self.WIDTH, self.HEIGHT, self.WIDTH),
 
@@ -1449,7 +1469,7 @@ class Snakes:
     # But only for snakes with an index in collided
     def plan_random_unblocked(self, collided):
         # different permutation for each collision
-        direction_index = np.random.randint(Snakes.NR_DIRECTION_PERMUTATIONS,
+        direction_index = np.random.randint(Snakes.NR_DIRECTION4_PERMUTATIONS,
                                             size=collided.size)
 
         # Currently we randomly generate the whole set of directions from
@@ -1644,17 +1664,13 @@ class Snakes:
     def move_debug(self):
         if self._xy_apple:
             y, x = self.yx(self._apple)
-            if not np.array_equal(x, self._apple_x):
-                raise(AssertionError("Bad apple"))
-            if not np.array_equal(y, self._apple_y):
-                raise(AssertionError("Bad apple"))
+            assert np.array_equal(x, self._apple_x)
+            assert np.array_equal(y, self._apple_y)
 
         if self._xy_head:
             y, x = self.yx(self._head)
-            if not np.array_equal(x, self._head_x):
-                raise(AssertionError("Bad head"))
-            if not np.array_equal(y, self._head_y):
-                raise(AssertionError("Bad head"))
+            assert np.array_equal(x, self._head_x)
+            assert np.array_equal(y, self._head_y)
 
     def move_select(self, display, move_result):
         pos = self.plan_greedy_unblocked()
@@ -1762,7 +1778,7 @@ class Snakes:
         # the previous move. But there was no previous move the first time...
         # Planners that care will have to test for <None> values or override
         # "run_start_results" with something that makes sense to them
-        return MoveResult()
+        return MoveResult(collided = self._all_snakes)
 
     def run_timers(self, display):
         # print("Start at time 0, frame", self.frame())
@@ -1902,8 +1918,7 @@ class Snakes:
             # since screen output represents the state during planning
             pos = self.move_select(display, move_result)
             # Forgetting to return is an easy bug leading to confusing errors
-            if pos is None:
-                raise(AssertionError("pos is None"))
+            assert pos is not None
 
             self.timestamp()
             if not self.move_show(display, pos):
@@ -1952,7 +1967,6 @@ class SnakesQ(Snakes):
     # LOOP is in units of AREA
     LOOP_MAX      = 2
     LOOP_ESCAPE   = 1
-    NR_STATES_APPLE = 8
     NR_STATES_MAX = np.iinfo(TYPE_QSTATE).max
 
     def __init__(self, *args,
@@ -1962,12 +1976,17 @@ class SnakesQ(Snakes):
                  wall_left = 0, wall_right = 0, wall_up = 0, wall_down = 0,
                  learning_rate = float(DEFAULTS["--learning-rate"]),
                  discount      = float(DEFAULTS["--discount"]),
-                 accelerated = False,
+                 accelerated   = False,
+                 symmetry      = False,
                  **kwargs):
 
         self._accelerated = accelerated
+        self._symmetry    = symmetry
         if vision is None:
-            vision = Vision(Vision.VISION4)
+            if symmetry:
+                vision = Vision(Vision.VISION_DH3)
+            else:
+                vision = Vision(Vision.VISION4)
         if view_x is None:
             view_x = max(Snakes.VIEW_X0, -np.amin(vision.x), np.amax(vision.x))
         if view_y is None:
@@ -1975,7 +1994,7 @@ class SnakesQ(Snakes):
 
         nr_neighbours = len(vision)
         if nr_neighbours <= 0:
-            raise(AssertionError("Your snake is blind"))
+            raise(ValueError("Your snake is blind"))
         self.NR_STATES_NEIGHBOUR = 2 ** nr_neighbours
 
         super().__init__(*args,
@@ -1994,7 +2013,20 @@ class SnakesQ(Snakes):
             vision.max_y > +self.VIEW_Y):
             raise(ValueError("Y View not high enough for vision"))
         self._vision_obj = vision
-        self._vision_pos = self.pos_from_xy(vision.x, vision.y)
+        if symmetry:
+            if (0,-1) in vision:
+                print(vision.string(final_newline = False))
+                raise(ValueError("Vision has backwards move which is pointless for this symmetry"))
+            # We never go backward
+            nr_actions = Snakes.NR_DIRECTIONS - 1
+            self.NR_STATES_APPLE = 5
+            self._vision_pos = np.tensordot(Snakes.ROTATIONS_DH @ np.stack((vision.x, vision.y),axis=0), np.array([1,self.WIDTH1], dtype=TYPE_POS), axes=(1,0))
+            self._old_direction = np_empty(self.nr_snakes, TYPE_ID)
+            # print(self._vision_pos)
+        else:
+            nr_actions = Snakes.NR_DIRECTIONS
+            self.NR_STATES_APPLE = 8
+            self._vision_pos = self.pos_from_xy(vision.x, vision.y)
         self._eat_frame = np_empty(self.nr_snakes, TYPE_MOVES)
 
         # Make sure the user entered sane values
@@ -2004,18 +2036,10 @@ class SnakesQ(Snakes):
         if wall_down  < 0: raise(ValueError("wall_down must not be negative"))
 
         # No need to look at walls farther than the pit size
-        wall_left  = min(wall_left,  self.WIDTH)
-        wall_right = min(wall_right, self.WIDTH)
-        wall_up    = min(wall_up,    self.HEIGHT)
-        wall_down  = min(wall_down,  self.HEIGHT)
-
-        # No need to look at walls if their distance is known
-        if self.WIDTH == 1:
-            wall_left  = 0
-            wall_right = 0
-        if self.HEIGHT == 1:
-            wall_up   = 0
-            wall_down = 0
+        wall_left  = min(wall_left,  self.WIDTH  - 1)
+        wall_right = min(wall_right, self.WIDTH  - 1)
+        wall_up    = min(wall_up,    self.HEIGHT - 1)
+        wall_down  = min(wall_down,  self.HEIGHT - 1)
 
         self._wall_left  = wall_left
         self._wall_right = wall_right
@@ -2060,16 +2084,15 @@ class SnakesQ(Snakes):
             self._wall1 *= self._pit_flag
             self._wall1 += self._pit_empty * SnakesQ.TYPE_QSTATE(self.NR_STATES_WALL)
             # And avoid needing to do the apple multiplier:
-            self._wall1 *= SnakesQ.NR_STATES_APPLE
+            self._wall1 *= self.NR_STATES_APPLE
             self._wall = self._wall1.reshape(self._wall1.size)
-            if self._wall.base is not self._wall1:
-                raise(AssertionError("wall is a copy instead of a view"))
+            assert self._wall.base is self._wall1
 
-        self.NR_STATES = SnakesQ.NR_STATES_APPLE * self.NR_STATES_NEIGHBOUR * self.NR_STATES_WALL
+        self.NR_STATES = self.NR_STATES_APPLE * self.NR_STATES_NEIGHBOUR * self.NR_STATES_WALL
         if self.NR_STATES > SnakesQ.NR_STATES_MAX:
             raise(ValueError("Number of states too high for Q table index type"))
-        self._q_table = np.empty((self.NR_STATES,
-                                  Snakes.NR_DIRECTIONS),
+
+        self._q_table = np.empty((self.NR_STATES, nr_actions),
                                  dtype=SnakesQ.TYPE_FLOAT)
         print("Q table has", self.NR_STATES, "states")
         print("Snake Vision:")
@@ -2077,9 +2100,8 @@ class SnakesQ(Snakes):
         sys.stdout.flush()
 
         # The previous test made sure this won't overflow
-        self.neighbour_multiplier = np.expand_dims(1 << np.arange(0, nr_neighbours, 8, dtype=SnakesQ.TYPE_QSTATE), axis=1) * (SnakesQ.NR_STATES_APPLE * self.NR_STATES_WALL)
-        if self.neighbour_multiplier.dtype != SnakesQ.TYPE_QSTATE:
-            raise(AssertionError("Unexpected neighbour multiplier dtype"))
+        self.neighbour_multiplier = np.expand_dims(1 << np.arange(0, nr_neighbours, 8, dtype=SnakesQ.TYPE_QSTATE), axis=1) * (self.NR_STATES_APPLE * self.NR_STATES_WALL)
+        assert self.neighbour_multiplier.dtype == SnakesQ.TYPE_QSTATE
 
     def run_start_extra(self, display):
         self._q_table.fill(SnakesQ.REWARD0)
@@ -2088,11 +2110,18 @@ class SnakesQ(Snakes):
         if self._accelerated:
             n = np.arange(self.NR_STATES_NEIGHBOUR, dtype=SnakesQ.TYPE_QSTATE)
             # Have a per neighbour view for fast neighbour selection
-            q_table = self._q_table.reshape((self.NR_STATES_NEIGHBOUR, SnakesQ.NR_STATES_APPLE * self.NR_STATES_WALL, Snakes.NR_DIRECTIONS))
-            if q_table.base is not self._q_table:
-                raise(AssertionError("q_table is a copy instead of a view"))
+            q_table = self._q_table.reshape((self.NR_STATES_NEIGHBOUR, self.NR_STATES_APPLE * self.NR_STATES_WALL, -1))
+            assert q_table.base is self._q_table
 
-            for d, (x, y) in enumerate(zip(np.nditer(Snakes.DIRECTIONS0_X), np.nditer(Snakes.DIRECTIONS0_Y))):
+            if self._symmetry:
+                # order: turn right, forward, turn left
+                # These are relative to forward (x, y) = (1, 0)
+                directions_x = np.array([0, 1, 0], dtype=TYPE_POS)
+                directions_y = np.array([1, 0,-1], dtype=TYPE_POS)
+            else:
+                directions_x = Snakes.DIRECTIONS0_X
+                directions_y = Snakes.DIRECTIONS0_Y
+            for d, (x, y) in enumerate(zip(np.nditer(directions_x), np.nditer(directions_y))):
                 pos = y+0, x+0
                 if pos in self._vision_obj:
                     i = self._vision_obj[y+0, x+0]
@@ -2101,17 +2130,12 @@ class SnakesQ(Snakes):
                     q_table[hit,:,d] = SnakesQ.REWARD_CRASH
 
         self._eat_frame.fill(self.frame())
-        #self._q_table = np.array(
-        #    np.random.uniform(SnakesQ.REWARD0-SnakesQ.REWARD_RAND,
-        #                      SnakesQ.REWARD0+SnakesQ.REWARD_RAND,
-        #                      size=(SnakesQ.NR_STATES, Snakes.NR_DIRECTIONS)),
-        #    dtype=SnakesQ.TYPE_FLOAT)
 
     def print_qtable(self, fh):
         nr_neighbours = len(self._vision_obj)
         bits = [0] * nr_neighbours
         state_max_len = len(str(self.NR_STATES_NEIGHBOUR-1))
-        states_per_neighbour = self.NR_STATES_WALL * SnakesQ.NR_STATES_APPLE
+        states_per_neighbour = self.NR_STATES_WALL * self.NR_STATES_APPLE
         for neighbour_state in range(self.NR_STATES_NEIGHBOUR):
             min_i = neighbour_state       * states_per_neighbour
             max_i = (neighbour_state + 1) * states_per_neighbour
@@ -2120,8 +2144,8 @@ class SnakesQ(Snakes):
                 print(self._vision_obj.string(final_newline = False,
                                               values = bits),
                       file = fh)
-                for i in range(min_i, max_i, SnakesQ.NR_STATES_APPLE):
-                    q_range = self._q_table[i:i+SnakesQ.NR_STATES_APPLE]
+                for i in range(min_i, max_i, self.NR_STATES_APPLE):
+                    q_range = self._q_table[i:i+self.NR_STATES_APPLE]
                     if q_range.any():
                         print(q_range, file=fh)
                     else:
@@ -2164,10 +2188,10 @@ class SnakesQ(Snakes):
         print("EOT", file=fh)
 
     def state(self, neighbour, apple, wall=0):
-        return apple + SnakesQ.NR_STATES_APPLE * (wall + self.NR_STATES_WALL * neighbour)
+        return apple + self.NR_STATES_APPLE * (wall + self.NR_STATES_WALL * neighbour)
 
     def unstate(self, state):
-        state_rest, apple = divmod(state,      SnakesQ.NR_STATES_APPLE)
+        state_rest, apple = divmod(state,      self.NR_STATES_APPLE)
         if self.NR_STATES_WALL > 1:
             neighbour,  wall  = divmod(state_rest, self.NR_STATES_WALL)
         else:
@@ -2210,22 +2234,7 @@ class SnakesQ(Snakes):
 
         is_eat = move_result.is_eat
         head = self.head()
-
-        # Determine the neighbourhood of the head
         # self.print_pos("Head", head)
-        neighbours_pos = np.add.outer(self._vision_pos, head)
-        neighbours = self._field[self._all_snakes, neighbours_pos]
-        # Walls are automatically set unique, so no need to zero them
-        # neighbours = np.logical_and(neighbours, self._pit_flag[neighbours_pos])
-        neighbours_packed = np.packbits(neighbours, axis=0,
-                                      bitorder="little")
-        neighbour_state = neighbours_packed * self.neighbour_multiplier
-        if len(neighbour_state > 1):
-            neighbour_state = np.sum(neighbour_state,
-                                     axis=0, dtype=SnakesQ.TYPE_QSTATE)
-        else:
-            neighbour_state = np.squeeze(neighbour_state, axis=0)
-        # if debug: print("Neigbour state", neighbour_state / SnakesQ.NR_STATES_APPLE)
 
         # Determine the direction of the apple
         if self._xy_head:
@@ -2244,8 +2253,36 @@ class SnakesQ(Snakes):
         dx = np.sign(apple_x - x)
         dy = np.sign(apple_y - y)
         # print_xy("Delta signs:", dx, dy)
-        apple_state = Snakes.DIRECTION8_ID[dy, dx]
-        # if debug: print("Apple state", apple_state)
+
+        nr_collided = move_result.collided.size
+        if self._symmetry:
+            if nr_collided:
+                # New games start with a random direction
+                # Some of these will seem to come out of a wall. We don't care
+                self._old_direction[move_result.collided] = np.random.randint(Snakes.NR_DIRECTIONS, size=nr_collided, dtype=TYPE_ID)
+            symmetry_state = Snakes.SYMMETRY8_DH[self._old_direction, dy, dx]
+            neighbours_pos = head + self._vision_pos[symmetry_state[:, 0]].transpose()
+            apple_state = symmetry_state[:, 1]
+            assert apple_state.base is symmetry_state
+        else:
+            apple_state = Snakes.DIRECTION8_ID[dy, dx]
+            # if debug: print("Apple state", apple_state)
+
+            # Determine the neighbourhood of the head
+            neighbours_pos = np.add.outer(self._vision_pos, head)
+        neighbours = self._field[self._all_snakes, neighbours_pos]
+        # Walls are automatically set unique, so no need to zero them
+        # neighbours = np.logical_and(neighbours, self._pit_flag[neighbours_pos])
+        neighbours_packed = np.packbits(neighbours, axis=0,
+                                      bitorder="little")
+        neighbour_state = neighbours_packed * self.neighbour_multiplier
+        if len(neighbour_state > 1):
+            neighbour_state = np.sum(neighbour_state,
+                                     axis=0, dtype=SnakesQ.TYPE_QSTATE)
+        else:
+            neighbour_state = np.squeeze(neighbour_state, axis=0)
+        # if debug: print("Neigbour state", neighbour_state / self.NR_STATES_APPLE)
+
         # Determine the wall state
         if self.NR_STATES_WALL > 1:
             wall_state = self._wall[head]
@@ -2254,20 +2291,22 @@ class SnakesQ(Snakes):
             state = neighbour_state + apple_state
 
         if debug:
-            print("Apple state[%d]:" % self._debug_index,
-                  apple_state[self._debug_index])
-            print("Wall state[%d]:" % self._debug_index,
-                  wall_state[self._debug_index] / SnakesQ.NR_STATES_APPLE if self.NR_STATES_WALL > 1 else None)
-            print("Neigbour state[%d]:" % self._debug_index,
-                  neighbour_state[self._debug_index] / (SnakesQ.NR_STATES_APPLE * self.NR_STATES_WALL))
+            a_state = apple_state[self._debug_index]
+            if self._symmetry:
+                a_state = Snakes.LEFT8[a_state]
+            print("Apple state = %d" % a_state)
+            print("Wall  state = %s" %
+                  str(wall_state[self._debug_index] / self.NR_STATES_APPLE) if self.NR_STATES_WALL > 1 else "None")
+            print("Neighbour state = %f" %
+                  (neighbour_state[self._debug_index] / (self.NR_STATES_APPLE * self.NR_STATES_WALL)))
 
         if debug:
             print(self._vision_obj.string(final_newline = False, values = neighbours[:,0]))
         # if debug: print("State", state)
         if debug:
-            print("Old State[%d]" % self._debug_index,
-                  None if is_eat is None else self._state[self._debug_index],
-                  "New State[%d]" % self._debug_index, state[self._debug_index])
+            print("Old State = %s, New State = %d" %
+                  ("None" if is_eat is None else str(self._old_state[self._debug_index]),
+                   state[self._debug_index]))
 
         # Evaluate the previous move
         if is_eat is not None:
@@ -2281,10 +2320,9 @@ class SnakesQ(Snakes):
             r = np.random.uniform(-SnakesQ.REWARD_RAND,
                                   +SnakesQ.REWARD_RAND)
             if debug:
-                print("Qrow[%d] before:" % self._debug_index,
-                      q_row[self._debug_index])
+                print("Qrow before:", q_row[self._debug_index])
                 #print("base r:", r)
-                #print("rand r[%d]:" % self._debug_index, rewards[self._debug_index])
+                #print("rand r:", rewards[self._debug_index])
             rewards += SnakesQ.REWARD_MOVE + r
             rewards[move_result.eaten]    += SnakesQ.REWARD_APPLE
             # eaten at this point contains collided, so compensate by an apple
@@ -2293,46 +2331,48 @@ class SnakesQ(Snakes):
             if move_result.won.size:
                 rewards[move_result.won] -= SnakesQ.REWARD_CRASH - SnakesQ.REWARD_APPLE
             # move_result.print()
-            # print("Rewards", rewards)
+            # print("Reward", rewards)
             if debug:
-                print("Rewards[%d]" % self._debug_index,
-                      rewards[self._debug_index])
+                print("Rewards", rewards[self._debug_index])
             advantage = np.amax(q_row, axis=-1) * self._discount
             advantage[move_result.collided] = 0
-            advantage -= self._q_table[self._state, self._action]
+            advantage -= self._q_table[self._old_state, self._old_action]
             # print("Advantage", advantage)
             if debug:
-                print("Advantage[%d]" % self._debug_index,
-                      advantage[self._debug_index])
+                print("Advantage", advantage[self._debug_index])
             rewards += advantage
             # print("Update", rewards)
             rewards *= self._learning_rate
             if debug:
-                print("Q old", self._q_table[self._state[self._debug_index]])
-                print("Update0[%d][%d]" % (self._state[self._debug_index],
-                                           self._action[self._debug_index]),
+                print("Q old", self._q_table[self._old_state[self._debug_index]])
+                print("Update[%u][%u]" % (self._old_state[self._debug_index],
+                                          self._old_action[self._debug_index]),
                       rewards[self._debug_index])
             # Potentially need to multi-update the same position, so use ads.at
-            np.add.at(self._q_table, (self._state, self._action), rewards)
+            np.add.at(self._q_table, (self._old_state, self._old_action), rewards)
             if debug:
-                print("Q new", self._q_table[self._state[self._debug_index]])
+                print("Q new", self._q_table[self._old_state[self._debug_index]])
             #if np.isnan(self._q_table).any():
             #    raise(AssertionError("Q table contains nan"))
 
         # Decide what to do
         q_row = self._q_table[state]
         if debug:
-            print("Qrow[%d] after: " % self._debug_index,
-                  q_row[self._debug_index])
-        action = q_row.argmax(axis=-1)
+            print("Qrow after: ", q_row[self._debug_index])
+        action = q_row.argmax(axis=-1).astype(TYPE_ID)
         if debug:
-            print("Old Action[%d]" % self._debug_index,
-                  None if is_eat is None else self._action[self._debug_index],
-                  "New action[%d]" % self._debug_index,
-                  action[self._debug_index],
-                  "Moves since apple[%d]" % self._debug_index,
-                  self.frame() - self._eat_frame[self._debug_index])
+            print("Old Action = %s, New action = %u, Moves since apple = %u" %
+                  ("None" if is_eat is None else str(self._old_action[self._debug_index]),
+                   action[self._debug_index],
+                   self.frame() - self._eat_frame[self._debug_index]))
+            if self._symmetry:
+                old_direction = self._old_direction[self._debug_index]
+                mirror = symmetry_state[self._debug_index, 2]
+                print("Old direction = %u, Mirror = %d, New direction = %u" %
+                      (old_direction, mirror,
+                       (old_direction + (action[self._debug_index]-1) * mirror) & 3))
 
+        # Detect starving snakes. They are probably looping
         looping = self._eat_frame <= self.frame() - SnakesQ.LOOP_MAX * self.AREA
         looping = looping.nonzero()[0]
         if looping.size:
@@ -2346,48 +2386,78 @@ class SnakesQ(Snakes):
                    print("Nr Escaping=", escaping.size,
                          "Escaping[0]", escaping[0])
                # We could also avoid crashing here
-               action[escaping] = np.random.randint(Snakes.NR_DIRECTIONS,
+               action[escaping] = np.random.randint(self._q_table.shape[-1],
                                                     size = escaping.size)
 
+        # Kick a small fraction of all snakes
         accept = np.random.randint(SnakesQ.EPSILON_INV, size=self.nr_snakes)
         randomize = (accept == 0).nonzero()[0]
         if randomize.size:
             # print("Randomize", randomize)
 
-            # different permutation for each randomization target
-            direction_index = np.random.randint(
-                Snakes.NR_DIRECTION_PERMUTATIONS, size=randomize.size)
+            if self._symmetry:
+                direction_id = np.random.randint(
+                    Snakes.NR_DIRECTION3_PERMUTATIONS, size=randomize.size)
+                # different permutation of turns for each randomized target
+                permutations = Snakes.DIRECTION3_ID_PERMUTATIONS[direction_id]
+                for i in range(3):
+                    # print("Permutation", i, permutations)
+                    turns = permutations[:, i]
+                    assert turns.base is permutations
+                    # print("T", turns)
+                    directions = ((turns-1) * symmetry_state[randomize, 2] + self._old_direction[randomize]) & 3
+                    # print("D", directions)
+                    action[randomize] = turns
+                    hit = self._field[randomize, head[randomize] + self.DIRECTIONS[directions]]
+                    # print("Hit", hit)
+                    hit = hit.nonzero()[0]
+                    # print("Hit index", hit)
+                    if hit.size == 0:
+                        break
+                    randomize = randomize[hit]
+                    permutations = permutations[hit]
+            else:
+                # different permutation for each randomization target
+                direction_id = np.random.randint(
+                    Snakes.NR_DIRECTION4_PERMUTATIONS, size=randomize.size)
 
-            # different permutation of directions for each randomized target
-            permutations = Snakes.DIRECTION_INDEX_PERMUTATIONS[direction_index]
-            for i in range(Snakes.NR_DIRECTIONS):
-                # print("Permutation", i)
-                # print(permutations)
-                directions = permutations[:, i]
-                if directions.base is not permutations:
-                    raise(AssertionError("directions is a copy instead of a view"))
-                # print("D", directions)
-                action[randomize] = directions
-                hit = self._field[randomize, head[randomize] + self.DIRECTIONS[directions]]
-                # print("Hit")
-                # print(hit)
-                hit = hit.nonzero()[0]
-                # print("Hit index", hit)
-                if hit.size == 0:
-                    break
-                randomize = randomize[hit]
-                permutations = permutations[hit]
+                # different permutation of directions for each randomized target
+                permutations = Snakes.DIRECTION4_ID_PERMUTATIONS[direction_id]
+                for i in range(Snakes.NR_DIRECTIONS):
+                    # print("Permutation", i, permutations)
+                    directions = permutations[:, i]
+                    assert directions.base is permutations
+                    # print("D", directions)
+                    action[randomize] = directions
+                    hit = self._field[randomize, head[randomize] + self.DIRECTIONS[directions]]
+                    # print("Hit", hit)
+                    hit = hit.nonzero()[0]
+                    # print("Hit index", hit)
+                    if hit.size == 0:
+                        break
+                    randomize = randomize[hit]
+                    permutations = permutations[hit]
+
+            if debug and accept[self._debug_index] == 0:
+                print("Randomly set New action = %u" %
+                      action[self._debug_index])
 
         # if debug:
-        #    empty_state = self.state(apple = np.arange(SnakesQ.NR_STATES_APPLE),
+        #    empty_state = self.state(apple = np.arange(self.NR_STATES_APPLE),
         #                             wall = 0,
         #                             neighbour = 0)
         #    print(self._q_table[empty_state])
         if debug: sys.stdout.flush()
         # Take the selected action and remember where we came from
-        self._state  = state
-        self._action = action
-        return head + self.DIRECTIONS[action]
+        self._old_state  = state
+        self._old_action = action
+        if self._symmetry:
+            self._old_direction += (action-1) * symmetry_state[:, 2]
+            self._old_direction &= 3
+            direction = self._old_direction
+        else:
+            direction = action
+        return head + self.DIRECTIONS[direction]
 
 if arguments["--benchmark"]:
     speed = 0
@@ -2419,6 +2489,7 @@ learning_rate = float(arguments["--learning-rate"])
 discount      = float(arguments["--discount"])
 snakes = SnakesQ(nr_snakes = nr_snakes,
                  accelerated = arguments["--accelerated"],
+                 symmetry    = arguments["--symmetry"],
                  debug       = arguments["--debug"],
                  width       = int(arguments["--width"]),
                  height      = int(arguments["--height"]),
