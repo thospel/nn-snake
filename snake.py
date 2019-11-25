@@ -59,7 +59,7 @@ Options:
                           there are very many states
   -f <file>:              Used by jupyter, ignored
 
-Display key actions:
+DisplayPygame key actions:
   s:          enter pause mode after doing a single step
   r, SPACE:   toggle run/pause mode
   Q, <close>: quit
@@ -239,10 +239,11 @@ ROW_BOTTOM = [
     TextField("games",       "Games:", 7),
 ]
 
+# +
 # This must be signed because window offsets can be negative
 TYPE_PIXELS = np.int32
 
-class Display:
+class DisplayPygame:
     KEY_INTERVAL = int(1000 / 20)  # twenty per second
     KEY_DELAY = 500                # Start repeating after half a second
     KEY_IGNORE = set((K_RSHIFT, K_LSHIFT, K_RCTRL, K_LCTRL, K_RALT, K_LALT,
@@ -284,7 +285,7 @@ class Display:
         self._slow_updates = slow_updates
 
         self.BLOCK = block_size
-        self.DRAW_BLOCK = self.BLOCK-2*Display.EDGE
+        self.DRAW_BLOCK = self.BLOCK-2*DisplayPygame.EDGE
 
         # coordinates relative to the upper left corner of the window
         self.TOP_TEXT_X  = self.BLOCK
@@ -293,7 +294,7 @@ class Display:
         # coordinates relative to the bottom left corner of the screen
         self.BOTTOM_TEXT_X  = self.BLOCK
         self.BOTTOM_TEXT_Y  = self.DRAW_BLOCK - self.BLOCK
-        # self.BOTTOM_TEXT_Y  = -Display.EDGE
+        # self.BOTTOM_TEXT_Y  = -DisplayPygame.EDGE
 
         self.WINDOW_X = (snakes.WIDTH +2) * self.BLOCK
         self.WINDOW_Y = (snakes.HEIGHT+2) * self.BLOCK
@@ -325,7 +326,7 @@ class Display:
         pygame.display.init()
         pygame.display.set_caption(self.caption)
         # pygame.mouse.set_visible(1)
-        pygame.key.set_repeat(Display.KEY_DELAY, Display.KEY_INTERVAL)
+        pygame.key.set_repeat(DisplayPygame.KEY_DELAY, DisplayPygame.KEY_INTERVAL)
 
         pygame.freetype.init()
         self._font = pygame.freetype.Font(None, self.BLOCK)
@@ -342,30 +343,30 @@ class Display:
                                    self.BOTTOM_TEXT_Y,
                                    self.BOTTOM_WIDTH, ROW_BOTTOM))
 
-        Display._screen = pygame.display.set_mode((self.WINDOW_X * columns, self.WINDOW_Y * rows))
+        DisplayPygame._screen = pygame.display.set_mode((self.WINDOW_X * columns, self.WINDOW_Y * rows))
         rect = 0, 0, self.WINDOW_X * columns, self.WINDOW_Y * rows
-        rect = pygame.draw.rect(Display._screen, Display.WALL, rect)
+        rect = pygame.draw.rect(DisplayPygame._screen, DisplayPygame.WALL, rect)
         for w in range(self.windows):
             self.draw_text_row("top", w)
         self.draw_text_row("bottom", 0)
-        Display._updates = [rect]
+        DisplayPygame._updates = [rect]
 
     def stop(self):
-        if not Display._screen:
+        if not DisplayPygame._screen:
             return
 
-        Display._screen  = None
-        Display._updates = []
+        DisplayPygame._screen  = None
+        DisplayPygame._updates = []
         pygame.quit()
         if self._slow_updates:
-            if Display._updates_count:
+            if DisplayPygame._updates_count:
                 print("Average disply update time: %.6f" %
-                      (Display._updates_time / Display._updates_count))
+                      (DisplayPygame._updates_time / DisplayPygame._updates_count))
             else:
                 print("No display updates")
 
     def __enter__(self):
-        if Display._screen:
+        if DisplayPygame._screen:
             raise(AssertionError("Attempt to start multiple displays at the same time"))
         self.start()
         return self
@@ -377,37 +378,37 @@ class Display:
     # and a new display can have started
 
     def update(self):
-        if Display._updates:
+        if DisplayPygame._updates:
             if self._slow_updates:
                 self._time_monotone_start  = time.monotonic()
-                pygame.display.update(Display._updates)
+                pygame.display.update(DisplayPygame._updates)
                 period = time.monotonic() - self._time_monotone_start
                 if period > self._slow_updates:
                     print("Update took %.4f" % period)
-                    for rect in Display._updates:
+                    for rect in DisplayPygame._updates:
                         print("    ", rect)
-                Display._updates_count +=1
-                Display._updates_time  += period
+                DisplayPygame._updates_count +=1
+                DisplayPygame._updates_time  += period
             else:
-                pygame.display.update(Display._updates)
-            Display._updates = []
+                pygame.display.update(DisplayPygame._updates)
+            DisplayPygame._updates = []
 
     def events_get(self, to_sleep):
         if to_sleep > 0:
             time.sleep(to_sleep)
         keys = []
-        if Display._screen:
+        if DisplayPygame._screen:
             events = pygame.event.get()
             if events:
                 for event in events:
                     if event.type == QUIT:
                         keys.append("Q")
-                    elif event.type == KEYDOWN and event.key not in Display.KEY_IGNORE:
+                    elif event.type == KEYDOWN and event.key not in DisplayPygame.KEY_IGNORE:
                         keys.append(event.unicode)
         return keys
 
     def draw_text_row(self, row_name, w, fg_color=BACKGROUND, bg_color=WALL):
-        if not Display._screen:
+        if not DisplayPygame._screen:
             return
 
         for text_data in self._textrows.lookup_row(row_name):
@@ -425,14 +426,14 @@ class Display:
             rect.x += self._window_x[w]
             rect.y = y - rect.y
             # print("Draw text", w, x, y, '"%s"' % text, x + self._window_x[w], y + self._window_y[w], rect, old_rect)
-            self._font.render_to(Display._screen, (x, y), None, fg_color, bg_color)
+            self._font.render_to(DisplayPygame._screen, (x, y), None, fg_color, bg_color)
             # We could union all rects, but for now this is only called on
             # start() and start() already forces its own single rect
-            Display._updates.append(rect)
+            DisplayPygame._updates.append(rect)
 
     def draw_text(self, w, name, value=None,
                        fg_color=BACKGROUND, bg_color=WALL):
-        if not Display._screen:
+        if not DisplayPygame._screen:
             return
 
         text_data = self._textrows.lookup(name)
@@ -450,7 +451,7 @@ class Display:
             # Erase old text
             old_rect = text_data.old_rect[w]
             if old_rect:
-                pygame.draw.rect(Display._screen, bg_color, old_rect)
+                pygame.draw.rect(DisplayPygame._screen, bg_color, old_rect)
             x = text_data.format_x
         y = text_data.y
 
@@ -459,7 +460,7 @@ class Display:
         rect.x += x
         if rect.x + rect.width > text_data.max_width:
             if value is not None and old_rect is not None:
-                Display._updates.append(old_rect)
+                DisplayPygame._updates.append(old_rect)
                 text_data.old_rect[w] = None
             return
         x += self._window_x[w]
@@ -467,14 +468,14 @@ class Display:
         rect.x += self._window_x[w]
         rect.y = y - rect.y
         # print("Draw text", w, x, y, '"%s"' % text, x + self._window_x[w], y + self._window_y[w], rect, old_rect)
-        self._font.render_to(Display._screen, (x, y), None, fg_color, bg_color)
+        self._font.render_to(DisplayPygame._screen, (x, y), None, fg_color, bg_color)
         if value is None:
-            Display._updates.append(rect)
+            DisplayPygame._updates.append(rect)
         else:
             if old_rect is None:
-                Display._updates.append(rect)
+                DisplayPygame._updates.append(rect)
             else:
-                Display._updates.append(rect.union(old_rect))
+                DisplayPygame._updates.append(rect.union(old_rect))
             # Remember what we updated
             text_data.old_rect[w] = rect
             text_data.old_text[w] = text
@@ -484,19 +485,19 @@ class Display:
                 self._window_y[w] - self.OFFSET_Y + self.BLOCK,
                 self.WINDOW_X - 2 * self.BLOCK,
                 self.WINDOW_Y - 2 * self.BLOCK)
-        rect = pygame.draw.rect(Display._screen, Display.BACKGROUND, rect)
-        Display._updates.append(rect)
+        rect = pygame.draw.rect(DisplayPygame._screen, DisplayPygame.BACKGROUND, rect)
+        DisplayPygame._updates.append(rect)
 
     def draw_block(self, w, x, y, color, update=True):
-        rect = (x * self.BLOCK + self._window_x[w] + Display.EDGE,
-                y * self.BLOCK + self._window_y[w] + Display.EDGE,
+        rect = (x * self.BLOCK + self._window_x[w] + DisplayPygame.EDGE,
+                y * self.BLOCK + self._window_y[w] + DisplayPygame.EDGE,
                 self.DRAW_BLOCK,
                 self.DRAW_BLOCK)
 
         # print("Draw %d (%d,%d): %d,%d,%d: [%d %d %d %d]" % ((w, x, y)+color+(rect)))
-        rect = pygame.draw.rect(Display._screen, color, rect)
+        rect = pygame.draw.rect(DisplayPygame._screen, color, rect)
         if update:
-            Display._updates.append(rect)
+            DisplayPygame._updates.append(rect)
         return rect
 
     def draw_collisions(self, i_index, w_index, pos, nr_games, nr_games_won):
@@ -505,12 +506,12 @@ class Display:
             if False:
                 # This test was for when the idea was to freeze some snakes
                 # if self._nr_moves[w] > self._cur_move:
-                self.draw_block(w, x, y, Display.COLLISION)
+                self.draw_block(w, x, y, DisplayPygame.COLLISION)
             else:
                 #self.draw_block(w,
                 #                self.last_collision_x[w],
                 #                self.last_collision_y[w],
-                #                Display.WALL)
+                #                DisplayPygame.WALL)
                 self.draw_text(w, "game", nr_games[i])
                 self.draw_text(w, "win",  nr_games_won[i])
                 # self.draw_text(w, "snake", i)
@@ -533,15 +534,15 @@ class Display:
             else:
                 # The current head becomes body
                 # (For length 1 snakes the following tail erase will undo this)
-                body_rect = self.draw_block(w, w_head_x_old[w], w_head_y_old[w], Display.BODY, update=False)
+                body_rect = self.draw_block(w, w_head_x_old[w], w_head_y_old[w], DisplayPygame.BODY, update=False)
             if not is_eat[i]:
                 # Drop the tail if we didn't eat an apple then
-                self.draw_block(w, w_tail_x[w], w_tail_y[w], Display.BACKGROUND)
+                self.draw_block(w, w_tail_x[w], w_tail_y[w], DisplayPygame.BACKGROUND)
             if body_rect:
-                head_rect = self.draw_block(w, w_head_x_new[w], w_head_y_new[w], Display.HEAD, update=False)
-                Display._updates.append(head_rect.union(body_rect))
+                head_rect = self.draw_block(w, w_head_x_new[w], w_head_y_new[w], DisplayPygame.HEAD, update=False)
+                DisplayPygame._updates.append(head_rect.union(body_rect))
             else:
-                self.draw_block(w, w_head_x_new[w], w_head_y_new[w], Display.HEAD)
+                self.draw_block(w, w_head_x_new[w], w_head_y_new[w], DisplayPygame.HEAD)
             self.draw_text(w, "moves", w_nr_moves[w])
             # self.draw_text(w, "x", w_head_x_new[w])
             # self.draw_text(w, "y", w_head_y_new[w])
@@ -551,7 +552,7 @@ class Display:
         # print("draw_apples", i_index, w_index, score)
         # print(np.stack((apple_x, apple_y), axis=-1))
         for i, w, x, y in zip(i_index, w_index, apple_x, apple_y):
-            self.draw_block(w, x, y, Display.APPLE)
+            self.draw_block(w, x, y, DisplayPygame.APPLE)
             self.draw_text(w, "score", score[i])
 
 
@@ -606,7 +607,6 @@ class ActorCriticModel(tf.keras.Model):
 """
 
 
-# +
 def np_empty(shape, dtype):
     # return np.empty(shape, dtype)
     # Fill with garbage for debug
@@ -621,7 +621,8 @@ def print_yx(text, pos):
     print_xy(text, pos[1], pos[0])
 
 
-# +
+# -
+
 # (Intentionally) crashes if any length is 0
 def shape_any(object):
     shape = []
@@ -629,9 +630,6 @@ def shape_any(object):
         shape.append(len(object))
         object = object[0]
     return shape
-
-
-# -
 # TYPE_POS needs to be signed since we also use it for vectors relative to (0,0)
 TYPE_POS   = np.int16
 TYPE_UPOS  = np.uint16
@@ -646,19 +644,21 @@ TYPE_SCORE = np.uint32
 TYPE_MOVES = np.uint32
 TYPE_GAMES = np.uint32
 
-# Parse drawings like:
-#      #
-#    # O #
-#      #
-# and returns a pair of coordinates arrays split into an x and y column:
-#  X  Y
-#  0 -1
-# -1  0
-#  1  0
-#  0  1
-
 @dataclass
 class Vision(dict):
+    """
+    Parse drawings like:
+         #
+       # O #
+         #
+    and returns a pair of coordinates arrays split into an x and y column:
+     X  Y
+     0 -1
+    -1  0
+     1  0
+     0  1
+    """
+
     VISION4       = """
       *
     * O *
@@ -823,7 +823,6 @@ class VisionFile(Vision):
         with open(file) as fh:
             super().__init__(fh.read())
 
-# +
 @dataclass
 class MoveResult:
     is_win:       np.ndarray = None
@@ -839,7 +838,6 @@ class MoveResult:
         print("eat: ", None if self.is_eat       is None else self.is_eat+0)
 
 
-# +
 class Snakes:
     # Event polling time in paused mode.
     # Avoid too much CPU waste or even a busy loop in case fps == 0
@@ -1794,7 +1792,7 @@ class Snakes:
             display.draw_text(w, "win",   self.nr_games_won(i))
             display.draw_text(w, "snake", i)
             display.draw_pit_empty(w)
-            display.draw_block(w, w_head_x[w], w_head_y[w], Display.HEAD)
+            display.draw_block(w, w_head_x[w], w_head_y[w], DisplayPygame.HEAD)
         display.draw_apples(self._all_windows, range(nr_windows),
                             self.yx(self._apple[self._all_windows]),
                             self._body_length)
@@ -1968,8 +1966,6 @@ class Snakes:
             # Modifies "is_eat" with collided and sets "eaten in move_result
             self.move_execute(display, pos, move_result)
 
-
-# -
 
 class SnakesRandom(Snakes):
     def __init__(self, *args, xy_head=False, xy_apple=False, **kwargs):
@@ -2380,6 +2376,7 @@ class SnakesQ(Snakes):
             # Determine the neighbourhood of the head
             neighbours_pos = head + self._vision_pos[symmetry_state[:, 0]].transpose()
         else:
+            symmetry_state = None
             apple_state = Snakes.DIRECTION8_ID[dy, dx]
             # if debug: print("Apple state", apple_state)
 
@@ -2587,7 +2584,7 @@ if arguments["--benchmark"]:
                         width     = 40,
                         height    = 40,
                         frame_max = 1000)
-        with Display(snakes, rows=0) as display:
+        with DisplayPygame(snakes, rows=0) as display:
             while snakes.draw_run(display,
                                   fps=0,
                                   stepping=False):
@@ -2596,7 +2593,6 @@ if arguments["--benchmark"]:
     print("%.0f" % speed)
     sys.exit()
 
-# +
 columns    = int(arguments["--columns"])
 rows       = int(arguments["--rows"])
 nr_snakes  = int(arguments["--snakes"]) or rows*columns
@@ -2621,7 +2617,7 @@ snakes = SnakesQ(nr_snakes = nr_snakes,
                  **snake_kwargs)
 
 # +
-with Display(snakes,
+with DisplayPygame(snakes,
              columns = columns,
              rows = rows,
              block_size = block_size,

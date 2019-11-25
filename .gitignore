@@ -6,6 +6,6 @@ cell_*.txt
 logs/
 bl?b*
 notes
-snake.py.git
+git_export.*
 snakes.dump*.txt
 snakes.log*.txt
