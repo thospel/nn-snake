@@ -39,11 +39,11 @@ def run(*cmd, output_mandatory=False):
 
     proc = subprocess.run(cmd, capture_output = True)
     if proc.stderr:
-        eprint(proc.stderr.decode())
+        eprint(proc.stderr.rstrip().decode())
     if proc.returncode:
         error("Unexpected exit code %d from '%s'" % (proc.returncode, cmd_str))
-    if proc.stderr:
-        error("Unexpected error output from '%s'" % cmd_str)
+    #if proc.stderr:
+    #    error("Unexpected error output from '%s'" % cmd_str)
     if output_mandatory and not proc.stdout:
         error("No output from %s" % cmd_str)
     return proc.stdout
@@ -151,7 +151,7 @@ def benchmark(file, loops=1, git=False, tag=False, push=False):
     tmp_dir = None;
     if git:
         path_export = daemon_export(".")
-        if True or path_export is None:
+        if path_export is None:
             tmp_dir = tempfile.TemporaryDirectory(prefix="git_export.nnsnake.")
             path_export = tmp_dir.name
             print("No export daemon, Falling back to manual git extract to " + path_export)
