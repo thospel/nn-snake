@@ -91,11 +91,11 @@ class TextRows(_TextRows):
 
 # +
 ROW_TOP = [
-    TextField("score", "Score:", 5),
-    TextField("game",  "Game:",  5),
-    TextField("moves", "Moves:", 7),
-    TextField("win",   "Won:",   2),
-    TextField("snake", "Id:",    3),
+    TextField(Display.TEXT_SCORE,    "Score:", 5),
+    TextField(Display.TEXT_GAME,     "Game:",  5),
+    TextField(Display.TEXT_MOVES,    "Moves:", 7),
+    TextField(Display.TEXT_WON,      "Won:",   2),
+    TextField(Display.TEXT_SNAKE_ID, "Id:",    3),
     # TextField("x",     "x:",     3),
     # TextField("y",     "y:",     3),
 ]
@@ -251,6 +251,14 @@ class DisplayPygame(Display):
             DisplayPygame._updates = []
 
 
+    def updated(self, rect):
+        DisplayPygame._updates.append(rect)
+
+
+    def rect_union(self, rect1, rect2):
+        return rect1.union(rect2)
+
+
     def events_key(self, now):
         keys = []
         if DisplayPygame._screen:
@@ -291,34 +299,29 @@ class DisplayPygame(Display):
             DisplayPygame._updates.append(rect)
 
 
-    def draw_text(self, w, name, value=None):
+    def draw_text(self, w, name, value):
         if not DisplayPygame._screen:
             return
 
         text_data = self._textrows.lookup(name)
 
-        if value is None:
-            text = text_data.prefix
-            old_rect = None
-            x = text_data.prefix_x
-        else:
-            text = text_data.format % value
-            old_text = text_data.old_text[w]
-            if old_text is not None and text == old_text:
-                # Update does nothing
-                return
-            # Erase old text
-            old_rect = text_data.old_rect[w]
-            if old_rect:
-                pygame.draw.rect(DisplayPygame._screen, DisplayPygame.COLORS[Display.WALL], old_rect)
-            x = text_data.format_x
+        text = text_data.format % value
+        old_text = text_data.old_text[w]
+        if old_text is not None and text == old_text:
+            # Update does nothing
+            return
+        # Erase old text
+        old_rect = text_data.old_rect[w]
+        if old_rect:
+            pygame.draw.rect(DisplayPygame._screen, DisplayPygame.COLORS[Display.WALL], old_rect)
+        x = text_data.format_x
         y = text_data.y
 
         # Draw new text
         rect = self._font.get_rect(text)
         rect.x += x
         if rect.x + rect.width > text_data.max_width:
-            if value is not None and old_rect is not None:
+            if old_rect is not None:
                 DisplayPygame._updates.append(old_rect)
                 text_data.old_rect[w] = None
             return
@@ -330,16 +333,13 @@ class DisplayPygame(Display):
         self._font.render_to(DisplayPygame._screen, (x, y), None,
                              DisplayPygame.COLORS[Display.BACKGROUND],
                              DisplayPygame.COLORS[Display.WALL])
-        if value is None:
+        if old_rect is None:
             DisplayPygame._updates.append(rect)
         else:
-            if old_rect is None:
-                DisplayPygame._updates.append(rect)
-            else:
-                DisplayPygame._updates.append(rect.union(old_rect))
-            # Remember what we updated
-            text_data.old_rect[w] = rect
-            text_data.old_text[w] = text
+            DisplayPygame._updates.append(rect.union(old_rect))
+        # Remember what we updated
+        text_data.old_rect[w] = rect
+        text_data.old_text[w] = text
 
 
     def draw_text_summary(self, name, value):
@@ -367,31 +367,3 @@ class DisplayPygame(Display):
         if update:
             DisplayPygame._updates.append(rect)
         return rect
-
-
-    # Slightly optimized version of draw_move (combine some rects)
-    def draw_move(self,
-                  all_windows, w_head_new,
-                  is_collision, w_head_old,
-                  is_eat, w_tail,
-                  w_nr_moves):
-        w_head_y_new, w_head_x_new = w_head_new
-        w_head_y_old, w_head_x_old = w_head_old
-        w_tail_y, w_tail_x = w_tail
-        for w in range(all_windows.size):
-            i = all_windows[w]
-            if is_collision[i]:
-                body_rect = None
-            else:
-                # The current head becomes body
-                # (For length 1 snakes the following tail erase will undo this)
-                body_rect = self.draw_block(w, w_head_x_old[w], w_head_y_old[w], Display.BODY, update=False)
-            if not is_eat[i]:
-                # Drop the tail if we didn't eat an apple
-                self.draw_block(w, w_tail_x[w], w_tail_y[w], Display.BACKGROUND)
-            if body_rect:
-                head_rect = self.draw_block(w, w_head_x_new[w], w_head_y_new[w], Display.HEAD, update=False)
-                DisplayPygame._updates.append(head_rect.union(body_rect))
-            else:
-                self.draw_block(w, w_head_x_new[w], w_head_y_new[w], Display.HEAD)
-            self.draw_text(w, "moves", w_nr_moves[w])

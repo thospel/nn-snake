@@ -21,7 +21,7 @@ Usage:
   snake.py [-f <file>] [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
            [--width=<width>] [--height=<height>] [--frames=<frames>]
            [--columns=columns] [--rows=rows] [--block=<block_size>]
-           [--wall=<wall>] [--symmetry]
+           [--wall=<wall>] [--symmetry] [--pygame]
            [--vision-file=<file>] [--dump-file=<file>] [--log-file=<log>]
            [--learning-rate=<r>] [--discount <ratio>] [--accelerated]
   snake.py --benchmark
@@ -45,6 +45,7 @@ Options:
   --wall=<wall>           Have state for distance from wall up to <wall>
                           [Default: 2]
   --symmetry              Apply dihedral symmetry
+  --pygame		  Use pygame for output
   --vision-file=<file>    Read snake vision from file
   --log-file=<file>       Write to logfile. Use an empty string if you
                           explicitely don't want any logging
@@ -60,7 +61,7 @@ Options:
                           there are very many states
   -f <file>:              Used by jupyter, ignored
 
-DisplayPygame key actions:
+Key actions:
   s:          enter pause mode after doing a single step
   r, SPACE:   toggle run/pause mode
   Q, <close>: quit
@@ -104,9 +105,12 @@ import os
 import sys
 import platform
 
-from display import Display
-from display.pygame import DisplayPygame
-# from display.qt5 import DisplayQt5
+if arguments["--benchmark"]:
+    from display import Display
+elif arguments["--pygame"]:
+    from display.pygame import DisplayPygame as Display
+else:
+    from display.qt5 import DisplayQt5 as Display
 
 import hashlib
 
@@ -1877,6 +1881,7 @@ if arguments["--benchmark"]:
                         height    = 40)
         display = Display(snakes, rows=0, log_file = None)
         display.run(snakes, fps=0, stepping=False, frame_max = 1000)
+        display.loop()
         speed = max(speed, snakes.frame() * snakes.nr_snakes / display.elapsed())
     print("%.0f" % speed)
     sys.exit()
@@ -1903,7 +1908,7 @@ snakes = SnakesQ(nr_snakes = nr_snakes,
                  **snake_kwargs)
 
 # +
-display = DisplayPygame(
+display = Display(
     snakes,
     columns    = columns,
     rows       = rows,
@@ -1916,6 +1921,7 @@ display.run(snakes,
             fps        = float(arguments["--fps"]),
             stepping   = arguments["--stepping"]
 )
+display.loop()
 
 print("Elapsed %.3f s (%.3fs used), Frames: %d, Frame Rate %.3f" %
       (display.elapsed(), display.elapsed_process(), snakes.frame(), display.frame_rate(snakes)))

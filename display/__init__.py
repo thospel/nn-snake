@@ -11,12 +11,20 @@ class Display:
     BODY       = 4
     COLLISION  = 5
 
+    TEXT_SCORE    = "score"
+    TEXT_GAME     = "game"
+    TEXT_MOVES    = "moves"
+    TEXT_WON      = "win"
+    TEXT_SNAKE_ID = "snake"
+
     # Event polling time in paused mode.
     # Avoid too much CPU waste or even a busy loop in case fps == 0
     POLL_SLOW = 1/25
     POLL_MAX = POLL_SLOW * 1.5
     WAIT_MIN = 1/1000
 
+
+    STARTED = 0
 
     def __init__(self, snakes,
                  rows       = 1,
@@ -144,20 +152,28 @@ class Display:
 
 
     def start(self):
-        pass
+        Display.STARTED +=1
 
 
     def stop(self):
         del self._snakes
         del self._moves
+        Display.STARTED -=1
 
 
     def draw_block(self, w, x, y, color, update=True):
-        pass
+        raise(NotImplementedError("draw_block not implemented for " +
+                                   type(self).__name__))
 
 
-    def draw_text(self, w, name, value = None):
-        pass
+    def draw_text(self, w, name, value):
+        raise(NotImplementedError("draw_text not implemented for " +
+                                   type(self).__name__))
+
+
+    def draw_text_summary(self, *args):
+        raise(NotImplementedError("draw_text_summary not implemented for " +
+                                   type(self).__name__))
 
 
     def draw_apples(self, i_index, w_index, apple, score):
@@ -166,7 +182,7 @@ class Display:
         # print(np.stack((apple_x, apple_y), axis=-1))
         for i, w, x, y in zip(i_index, w_index, apple_x, apple_y):
             self.draw_block(w, x, y, Display.APPLE)
-            self.draw_text(w, "score", score[i])
+            self.draw_text(w, Display.TEXT_SCORE, score[i])
 
 
     def draw_move(self,
@@ -184,12 +200,16 @@ class Display:
             else:
                 # The current head becomes body
                 # (For length 1 snakes the following tail erase will undo this)
-                self.draw_block(w, w_head_x_old[w], w_head_y_old[w], Display.BODY, update=False)
+                body_rect = self.draw_block(w, w_head_x_old[w], w_head_y_old[w], Display.BODY, update=False)
             if not is_eat[i]:
                 # Drop the tail if we didn't eat an apple
                 self.draw_block(w, w_tail_x[w], w_tail_y[w], Display.BACKGROUND)
-            self.draw_block(w, w_head_x_new[w], w_head_y_new[w], Display.HEAD)
-            self.draw_text(w, "moves", w_nr_moves[w])
+            if body_rect:
+                head_rect = self.draw_block(w, w_head_x_new[w], w_head_y_new[w], Display.HEAD, update=False)
+                self.updated(self.rect_union(head_rect, body_rect))
+            else:
+                self.draw_block(w, w_head_x_new[w], w_head_y_new[w], Display.HEAD)
+            self.draw_text(w, Display.TEXT_MOVES, w_nr_moves[w])
 
 
     def draw_collisions(self, i_index, w_index, pos, nr_games, nr_games_won):
@@ -204,11 +224,9 @@ class Display:
                 #                self.last_collision_x[w],
                 #                self.last_collision_y[w],
                 #                DisplayPygame.WALL)
-                self.draw_text(w, "game", nr_games[i])
-                self.draw_text(w, "win",  nr_games_won[i])
-                # self.draw_text(w, "snake", i)
-                # self.draw_text(w, "x")
-                # self.draw_text(w, "y")
+                self.draw_text(w, Display.TEXT_GAME, nr_games[i])
+                self.draw_text(w, Display.TEXT_WON,  nr_games_won[i])
+                # self.draw_text(w, Display.TEXT_SNAKE_ID, i)
                 self.draw_pit_empty(w)
 
 
@@ -222,14 +240,11 @@ class Display:
             self.draw_pit_empty(w)
             self.draw_block(w, w_head_x[w], w_head_y[w], Display.HEAD)
 
-            self.draw_text(w, "moves", snakes.nr_moves(i))
-            self.draw_text(w, "game",  snakes.nr_games(i))
-            self.draw_text(w, "win",   snakes.nr_games_won(i))
-            self.draw_text(w, "snake", i)
+            self.draw_text(w, Display.TEXT_MOVES, snakes.nr_moves(i))
+            self.draw_text(w, Display.TEXT_GAME,  snakes.nr_games(i))
+            self.draw_text(w, Display.TEXT_WON,   snakes.nr_games_won(i))
+            self.draw_text(w, Display.TEXT_SNAKE_ID, i)
 
-
-    def draw_text_summary(self, *args):
-        pass
 
     # Dislay the current state
     def draw_result(self, initial = False):
@@ -261,16 +276,9 @@ class Display:
             self.draw_text_summary("time", elapsed_sec)
 
 
-    def timers_start(self, fps):
+    def timers_start(self):
         # print("Start at time 0, frame", snakes.frame())
 
-        if fps > 0:
-            self._poll_fast = 1 / fps
-        elif fps == 0:
-            self._poll_fast = 0
-        else:
-            raise(ValueError("fps must not be negative"))
-        self._poll_fast0 = self._poll_fast
         self._paused = 0
         self._elapsed_sec_log  = 0
 
@@ -340,43 +348,59 @@ class Display:
         self._stepping = stepping
         self._frame_max = frame_max
         self._snakes = snakes
+        if fps > 0:
+            self._poll_fast = 1 / fps
+        elif fps == 0:
+            self._poll_fast = 0
+        else:
+            raise(ValueError("fps must not be negative"))
+        self._poll_fast0 = self._poll_fast
 
         self.start()
         self.log_open()
         snakes.run_start(self)
         snakes.run_start_extra()
         self._moves = snakes.move_generator(self)
+
         # This is not so much a move as initializing everything
         self.move()
-        # _unloop must be set here since draw_result can immediately set it True
-        self._unloop = False
         self.draw_result(initial=True)
         self.update()
-        self.timers_start(fps)
+
+        # Continue in run1()
+        self._quit = False
+        self.set_timer_step(0, self.run1)
+
+    # Continuation of run(), but called from loop()
+    def run1(self):
+        self.timers_start()
         self.log_start()
-        self.set_timer_step(0)
-        self.loop()
+        # Loop in step() until event_quit sets it to run2()
+        self.set_timer_step(0, self.step)
+
+    # Continuation of run1(), called from loop()
+    def run2(self):
         self.timestamp()
-        snakes.run_finish()
+        self.snakes().run_finish()
         self.log_stop()
         self.log_close()
         self.stop()
+        # And this finishes run()
 
 
     def loop(self):
         now_monotonic = time.monotonic()
-        while True:
+        while Display.STARTED > 0:
             if self._to_sleep > 0:
                 time.sleep(self._to_sleep)
                 now_monotonic = time.monotonic()
-            if self._unloop:
-                break
             now_monotonic = self.events_process(now_monotonic)
-            now_monotonic = self.step(now_monotonic)
+            now_monotonic = self._callback()
 
 
-    def set_timer_step(self, to_sleep, now_monotonic=None):
+    def set_timer_step(self, to_sleep=0, callback=None, now_monotonic=None):
         self._to_sleep = to_sleep
+        self._callback = callback
 
 
     def step(self, now_monotonic = None):
@@ -388,8 +412,7 @@ class Display:
         elif now_monotonic >= self._time_target - Display.WAIT_MIN or self._stepping:
             snakes = self.snakes()
             if snakes.frame() == self._frame_max:
-                self._unloop = True
-                self.set_timer_step(0, now_monotonic)
+                self.event_quit(now_monotonic)
                 return now_monotonic
 
             elapsed_sec = int(self.timestamp(now_monotonic))
@@ -417,7 +440,7 @@ class Display:
                     to_sleep = 0
             else:
                 to_sleep = 0
-        self.set_timer_step(to_sleep, now_monotonic)
+        self.set_timer_step(to_sleep, self.step, now_monotonic)
         return now_monotonic
 
 
@@ -516,4 +539,6 @@ class Display:
 
 
     def event_quit(self, now_monotonic = None):
-        self._unloop = True
+        if not self._quit:
+            self._quit = True
+            self.set_timer_step(0, self.run2, now_monotonic)
