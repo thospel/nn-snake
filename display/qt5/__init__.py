@@ -33,8 +33,8 @@ COLORS = [
     QColor(255, 0, 0)
 ]
 
-EDGE_SHOWN_X = 1
-EDGE_SHOWN_Y = 1
+EDGE_SHOWN_X = 1/2
+EDGE_SHOWN_Y = 1/2
 SCALE = 10
 BLOCK = SCALE - 2 * Display.EDGE
 
@@ -101,8 +101,6 @@ class Pit(QWidget):
 
         # Fetch the pixmap from the label which will be *different*
         painter = QPainter(label.pixmap())
-        painter.setPen(QPen(COLORS[Display.WALL], 1, Qt.SolidLine))
-        painter.setBrush(QBrush(COLORS[Display.WALL], Qt.SolidPattern))
 
         # Set up coordinates
         unit_x = pixmap.width()  / units_x
@@ -128,7 +126,7 @@ class Pit(QWidget):
         self._transform = painter.combinedTransform()
 
         self._painter = painter
-
+        self._brush = QBrush(COLORS[Display.WALL], Qt.SolidPattern)
         self._label = label
 
         layout.addWidget(label)
@@ -140,41 +138,27 @@ class Pit(QWidget):
 
 
     def draw_block(self, x, y, color, update):
-        print("Draw block", x, y, color, update)
         painter = self._painter
 
-        pen = painter.pen()
-        pen.setColor(COLORS[color])
-        painter.setPen(pen)
-
-        brush = painter.brush()
+        brush = self._brush
         brush.setColor(COLORS[color])
-        painter.setBrush(brush)
 
         rect = QRect(SCALE * x + Display.EDGE, SCALE * y + Display.EDGE,
                      BLOCK, BLOCK)
-        painter.drawRect(rect)
-        print("Transform", matrix_from_transform(painter.combinedTransform()))
+        painter.fillRect(rect, brush)
         new_rect = painter.combinedTransform().mapRect(rect)
-        print("Rect", rect)
-        print("New Rect", new_rect)
         self._label.update(new_rect)
 
 
     def draw_pit_empty(self, snakes):
         painter = self._painter
 
-        pen = painter.pen()
-        pen.setColor(COLORS[Display.BACKGROUND])
-        painter.setPen(pen)
-
-        brush = painter.brush()
+        brush = self._brush
         brush.setColor(COLORS[Display.BACKGROUND])
-        painter.setBrush(brush)
 
         rect = QRect(SCALE * snakes.VIEW_X, SCALE * snakes.VIEW_Y,
                      SCALE * snakes.WIDTH,  SCALE * snakes.HEIGHT)
-        painter.drawRect(rect)
+        painter.fillRect(rect, brush)
         new_rect = painter.combinedTransform().mapRect(rect)
         self._label.update(new_rect)
 
