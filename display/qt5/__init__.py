@@ -22,7 +22,8 @@ from PyQt5.QtCore import QTimer, Qt, QRect
 
 # const QFont fixedFont = QFontDatabase::systemFont(QFontDatabase::FixedFont)
 
-app = QApplication([])
+app = QApplication(["dummy", "-stylesheet", "snake.qss"])
+# Replace this by a manual setStyleSheet() at some point
 
 COLORS = [
     QColor(0, 0, 0),
@@ -38,54 +39,92 @@ EDGE_SHOWN_Y = 1/2
 SCALE = 10
 BLOCK = SCALE - 2 * Display.EDGE
 
+TEXT_SPACING = 9
+
 def matrix_from_transform(transform):
     return [[transform.m11(), transform.m12(), transform.m13()],
             [transform.m21(), transform.m22(), transform.m23()],
             [transform.m31(), transform.m32(), transform.m33()]]
 
-class PitStatus(QWidget):
+
+# QLabel that never lets go of horizontal space it acquired
+class QLabelGreedy(QLabel):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._grabbed = 0
+
+
+    def grabbed(self):
+        return self._grabbed
+
+
+    def grow(self, size):
+        if size > self._grabbed:
+            self._grabbed = size
+        return self._grabbed
+
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        if hint.width() > self._grabbed:
+            self._grabbed = hint.width()
+            hint.setWidth(self._grabbed)
+            self.setMinimumSize(hint)
+        return hint
+
+
+class PitStatus(QFrame):
     def __init__(self, snake_nr):
         super().__init__()
         self._text = dict()
 
         layout = QHBoxLayout()
+        layout.setContentsMargins(0,0,0,0)
+        # layout.addStretch()
 
-        layout.addWidget(QLabel("Score:"))
-        label = QLabel("0")
-        self._text[Display.TEXT_SCORE] = label
-        layout.addWidget(label)
+        self.text_add(layout, Display.TEXT_SCORE,    "Score:")
+        self.text_add(layout, Display.TEXT_GAME,     "Game:")
+        self.text_add(layout, Display.TEXT_MOVES,    "Moves:")
+        self.text_add(layout, Display.TEXT_WON,      "Won:")
+        self.text_add(layout, Display.TEXT_SNAKE_ID, "Id:", str(snake_nr))
 
-        layout.addWidget(QLabel("Game:"))
-        label = QLabel("0")
-        self._text[Display.TEXT_GAME] = label
-        layout.addWidget(label)
-
-        layout.addWidget(QLabel("Moves:"))
-        label = QLabel("0")
-        self._text[Display.TEXT_MOVES] = label
-        layout.addWidget(label)
-
-        layout.addWidget(QLabel("Won:"))
-        label = QLabel("0")
-        self._text[Display.TEXT_WON] = label
-        layout.addWidget(label)
-
-        layout.addWidget(QLabel("Id:"))
-        label = QLabel(str(snake_nr))
-        self._text[Display.TEXT_SNAKE_ID] = label
-        layout.addWidget(label)
-
+        layout.addStretch()
         self.setLayout(layout)
+        self.setObjectName("pitStatus")
+
+
+    def text_add(self, layout, key, name, format = "%d", initial_value = "0"):
+        label_key   = QLabel(name)
+        label_value = QLabelGreedy(initial_value)
+        id = key.capitalize()
+        label_key  .setObjectName("key"   + id)
+        label_value.setObjectName("value" + id)
+
+        # layout.addSpacing(TEXT_SPACING)
+        layout.addWidget(QLabel(" "))
+        layout.addWidget(label_key)
+        layout.addWidget(label_value)
+        # layout.addStretch()
+
+        if key in self._text:
+            raise(AssertionError("Duplicate text key " + key))
+        self._text[key] = (label_value, format)
 
 
     def draw_text(self, name, value):
-        self._text[name].setText(str(value))
+        (label, format) = self._text[name]
+        label.setText(str(format % value))
 
 
 class Pit(QWidget):
     def __init__(self, display, snake_nr):
         super().__init__()
+
         layout = QVBoxLayout()
+        layout.setContentsMargins(0,0,0,0)
+        layout.setSpacing(0)
+
         self._status = PitStatus(snake_nr)
         layout.addWidget(self._status)
         snakes = display.snakes()
@@ -100,6 +139,8 @@ class Pit(QWidget):
         label.setPixmap(pixmap)
 
         # Fetch the pixmap from the label which will be *different*
+        # According to the official Qt documentation you are only allowed to
+        # paint during a paint_event. But what do they know...
         painter = QPainter(label.pixmap())
 
         # Set up coordinates
@@ -131,13 +172,18 @@ class Pit(QWidget):
 
         layout.addWidget(label)
         self.setLayout(layout)
+        self.setObjectName("pit")
+
+
+    def stop(self):
+        self._painter.end()
 
 
     def draw_text(self, name, value):
         self._status.draw_text(name, value)
 
 
-    def draw_block(self, x, y, color, update):
+    def draw_block(self, x, y, color, update, combine):
         painter = self._painter
 
         brush = self._brush
@@ -146,8 +192,14 @@ class Pit(QWidget):
         rect = QRect(SCALE * x + Display.EDGE, SCALE * y + Display.EDGE,
                      BLOCK, BLOCK)
         painter.fillRect(rect, brush)
-        new_rect = painter.combinedTransform().mapRect(rect)
-        self._label.update(new_rect)
+        rect = painter.combinedTransform().mapRect(rect)
+        if combine:
+            rect |= combine
+        if update:
+            self._label.update(rect)
+            return None
+        else:
+            return rect
 
 
     def draw_pit_empty(self, snakes):
@@ -159,33 +211,125 @@ class Pit(QWidget):
         rect = QRect(SCALE * snakes.VIEW_X, SCALE * snakes.VIEW_Y,
                      SCALE * snakes.WIDTH,  SCALE * snakes.HEIGHT)
         painter.fillRect(rect, brush)
-        new_rect = painter.combinedTransform().mapRect(rect)
-        self._label.update(new_rect)
+        rect = painter.combinedTransform().mapRect(rect)
+        self._label.update(rect)
 
 
 class Screen(QWidget):
     def __init__(self, display):
         super().__init__()
+
+        self._text = dict()
+        self._display = display
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0,0,0,0)
+        layout.setSpacing(0)
+
+        layout.addWidget(self.pit_box(display))
+        layout.addWidget(self.status_bar())
+
+        self.setLayout(layout)
+        self.setObjectName("screen")
+
+        QShortcut(QKeySequence('Shift+Q'), self, display.event_quit)
+        QShortcut(QKeySequence('s'), self, display.event_single_step)
+        QShortcut(QKeySequence(' '), self, display.event_toggle_run)
+        QShortcut(QKeySequence('r'), self, display.event_toggle_run)
+        QShortcut(QKeySequence('d'), self, display.event_debug)
+        QShortcut(QKeySequence('Shift+D'), self, display.event_dump)
+        QShortcut(QKeySequence('+'), self, display.event_speed_higher)
+        QShortcut(QKeySequence('-'), self, display.event_speed_lower)
+        QShortcut(QKeySequence('='), self, display.event_speed_normal)
+
+        self.show()
+
+
+    def closeEvent(self, event):
+        self._display.event_quit()
+        event.ignore()
+
+
+    def stop(self):
+        for pit in self._pits:
+            pit.stop()
+        self.close()
+
+
+    def pit_box(self, display):
+        frame = QFrame()
+
         layout = QGridLayout()
+        layout.setContentsMargins(0,0,0,0)
+        layout.setSpacing(0)
+
         self._pits = []
         for r in range(display.rows):
             for c in range(display.columns):
                 pit = Pit(display, len(self._pits))
                 self._pits.append(pit)
                 layout.addWidget(pit, r, c)
-        self.setLayout(layout)
-        QShortcut(QKeySequence('s'), self, display.event_single_step)
-        QShortcut(QKeySequence(' '), self, display.event_toggle_run)
-        QShortcut(QKeySequence('r'), self, display.event_toggle_run)
-        QShortcut(QKeySequence('d'), self, display.event_debug)
-        # QShortcut(QKeySequence('D'), self, display.event_dump)
-        QShortcut(QKeySequence('+'), self, display.event_speed_higher)
-        QShortcut(QKeySequence('-'), self, display.event_speed_lower)
-        QShortcut(QKeySequence('='), self, display.event_speed_normal)
-        self.show()
+        frame.setLayout(layout)
+        frame.setObjectName("pits")
+        return frame
+
 
     def pit(self, i):
         return self._pits[i]
+
+
+    def status_bar(self):
+        frame = QFrame()
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0,0,0,0)
+        layout.setSpacing(0)
+
+        layout.addStretch()
+
+        self.text_add(layout, Display.TEXT_STEP,      "Step:"),
+        self.text_add(layout, Display.TEXT_SCORE_MAX, "Max Score:"),
+        self.text_add(layout, Display.TEXT_MOVES_MAX, "Max Moves:"),
+        self.text_add(layout, Display.TEXT_GAME_MAX,  "Max Game:"),
+        # self.text_add(layout, Display.TEXT_SCORE_PER_SNAKE, "Score/Snake:"
+        #               format = "%.3f", initial_value = None),
+        self.text_add(layout, Display.TEXT_SCORE_PER_GAME, "Score/Game:",
+                      format = "%.3f", initial_value = None),
+        self.text_add(layout, Display.TEXT_MOVES_PER_GAME, "Moves/Game:",
+                      format = "%.3f", initial_value = None),
+        self.text_add(layout, Display.TEXT_MOVES_PER_APPLE, "Moves/Apple:",
+                      format = "%.3f", initial_value = None),
+        self.text_add(layout, Display.TEXT_TIME,      "Time:"),
+        self.text_add(layout, Display.TEXT_WINS,      "Won:"),
+        self.text_add(layout, Display.TEXT_GAMES,     "Games:"),
+
+        frame.setLayout(layout)
+        frame.setObjectName("status")
+        return frame
+
+
+    def text_add(self, layout, key, name, format = "%d", initial_value = "0"):
+        label_key   = QLabel(name)
+        label_value = QLabelGreedy("---" if initial_value is None else initial_value)
+        id = key.capitalize()
+        label_key  .setObjectName("key"   + id)
+        label_value.setObjectName("value" + id)
+
+        # layout.addSpacing(TEXT_SPACING)
+        layout.addWidget(QLabel(" "))
+        layout.addWidget(label_key)
+        layout.addWidget(label_value)
+        layout.addStretch()
+
+        if key in self._text:
+            raise(AssertionError("Duplicate text key " + key))
+        self._text[key] = (label_value, format)
+
+
+    def draw_text(self, name, value):
+        (label, format) = self._text[name]
+        label.setText(str(format % value))
+
 
 class DisplayQt5(Display):
     def __init__(self, snakes,
@@ -209,10 +353,11 @@ class DisplayQt5(Display):
 
 
     def stop(self):
-        super().stop()
-
+        self._screen.stop()
         del self._stepper
         del self._screen
+
+        # super().stop()
 
 
     def set_timer_step(self, to_sleep, callback, now_monotonic=None):
@@ -223,17 +368,17 @@ class DisplayQt5(Display):
         self._screen.pit(w).draw_pit_empty(self.snakes())
 
 
-    def draw_text_summary(self, *args):
-        pass
-
-
     def loop(self):
         app.exec_()
 
 
-    def draw_block(self, w, x, y, color, update=True):
-        self._screen.pit(w).draw_block(x, y, color, update)
+    def draw_block(self, w, x, y, color, update=True, combine=None):
+        return self._screen.pit(w).draw_block(x, y, color, update, combine)
 
 
     def draw_text(self, w, name, value):
         self._screen.pit(w).draw_text(name, value)
+
+
+    def draw_text_summary(self, name, value):
+        self._screen.draw_text(name, value)

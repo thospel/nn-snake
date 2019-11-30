@@ -11,11 +11,23 @@ class Display:
     BODY       = 4
     COLLISION  = 5
 
-    TEXT_SCORE    = "score"
-    TEXT_GAME     = "game"
-    TEXT_MOVES    = "moves"
-    TEXT_WON      = "win"
-    TEXT_SNAKE_ID = "snake"
+    TEXT_SCORE           = "score"
+    TEXT_GAME            = "game"
+    TEXT_MOVES           = "moves"
+    TEXT_WON             = "win"
+    TEXT_SNAKE_ID        = "snake"
+
+    TEXT_STEP            = "step"
+    TEXT_SCORE_MAX       = "score_max"
+    TEXT_MOVES_MAX       = "moves_max"
+    TEXT_GAME_MAX        = "game_max"
+    TEXT_SCORE_PER_GAME  = "score_per_game"
+    TEXT_MOVES_PER_GAME  = "moves_per_game"
+    TEXT_MOVES_PER_APPLE = "moves_per_apple"
+    TEXT_SCORE_PER_SNAKE = "score_per_snake"
+    TEXT_TIME            = "time"
+    TEXT_WINS            = "wins"
+    TEXT_GAMES           = "games"
 
     # Event polling time in paused mode.
     # Avoid too much CPU waste or even a busy loop in case fps == 0
@@ -205,8 +217,7 @@ class Display:
                 # Drop the tail if we didn't eat an apple
                 self.draw_block(w, w_tail_x[w], w_tail_y[w], Display.BACKGROUND)
             if body_rect:
-                head_rect = self.draw_block(w, w_head_x_new[w], w_head_y_new[w], Display.HEAD, update=False)
-                self.updated(self.rect_union(head_rect, body_rect))
+                head_rect = self.draw_block(w, w_head_x_new[w], w_head_y_new[w], Display.HEAD, combine = body_rect)
             else:
                 self.draw_block(w, w_head_x_new[w], w_head_y_new[w], Display.HEAD)
             self.draw_text(w, Display.TEXT_MOVES, w_nr_moves[w])
@@ -251,19 +262,19 @@ class Display:
         snakes = self.snakes()
 
         # draw_text is optimized to not draw any value that didn't change
-        self.draw_text_summary("step", snakes.frame())
-        # self.draw_text_summary("score_per_snake", snakes.score_total_snakes() / snakes._nr_snakes)
-        self.draw_text_summary("score_max", snakes.score_max())
-        self.draw_text_summary("moves_max", snakes.nr_moves_max())
-        self.draw_text_summary("game_max",  snakes.nr_games_max())
-        self.draw_text_summary("moves_max", snakes.nr_moves_max())
-        self.draw_text_summary("games",     snakes.nr_games_total())
-        self.draw_text_summary("wins",      snakes.nr_games_won_total())
+        self.draw_text_summary(Display.TEXT_STEP, snakes.frame())
+        # self.draw_text_summary(Display.TEXT_SCORE_PER_SNAKE, snakes.score_total_snakes() / snakes._nr_snakes)
+        self.draw_text_summary(Display.TEXT_SCORE_MAX, snakes.score_max())
+        self.draw_text_summary(Display.TEXT_MOVES_MAX, snakes.nr_moves_max())
+        self.draw_text_summary(Display.TEXT_GAME_MAX,  snakes.nr_games_max())
+        self.draw_text_summary(Display.TEXT_MOVES_MAX, snakes.nr_moves_max())
+        self.draw_text_summary(Display.TEXT_GAMES,     snakes.nr_games_total())
+        self.draw_text_summary(Display.TEXT_WINS,      snakes.nr_games_won_total())
         if snakes.nr_games_total():
-            self.draw_text_summary("score_per_game",  snakes.score_per_game())
-            self.draw_text_summary("moves_per_game",  snakes.nr_moves_per_game())
+            self.draw_text_summary(Display.TEXT_SCORE_PER_GAME,  snakes.score_per_game())
+            self.draw_text_summary(Display.TEXT_MOVES_PER_GAME,  snakes.nr_moves_per_game())
         if snakes.score_total_games():
-            self.draw_text_summary("moves_per_apple", snakes.nr_moves_per_apple())
+            self.draw_text_summary(Display.TEXT_MOVES_PER_APPLE, snakes.nr_moves_per_apple())
 
         if initial:
             # Fake it (the real timers haven't started yet)
@@ -273,7 +284,7 @@ class Display:
             elapsed_sec = int(self.elapsed(time.monotonic()))
         if elapsed_sec != self._elapsed_sec_draw:
             self._elapsed_sec_draw = elapsed_sec
-            self.draw_text_summary("time", elapsed_sec)
+            self.draw_text_summary(Display.TEXT_TIME, elapsed_sec)
 
 
     def timers_start(self):
@@ -406,13 +417,17 @@ class Display:
     def step(self, now_monotonic = None):
         if now_monotonic is None:
             now_monotonic = time.monotonic()
+        if self._quit:
+            self.set_timer_step(0, self.run2, now_monotonic)
+            return now_monotonic
+
         if self._pause_time and not self._stepping:
             self._time_target = now_monotonic + Display.POLL_SLOW
 
         elif now_monotonic >= self._time_target - Display.WAIT_MIN or self._stepping:
             snakes = self.snakes()
             if snakes.frame() == self._frame_max:
-                self.event_quit(now_monotonic)
+                self.set_timer_step(0, self.run2, now_monotonic)
                 return now_monotonic
 
             elapsed_sec = int(self.timestamp(now_monotonic))
@@ -539,6 +554,4 @@ class Display:
 
 
     def event_quit(self, now_monotonic = None):
-        if not self._quit:
-            self._quit = True
-            self.set_timer_step(0, self.run2, now_monotonic)
+        self._quit = True

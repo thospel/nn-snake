@@ -101,18 +101,18 @@ ROW_TOP = [
 ]
 
 ROW_BOTTOM = [
-    TextField("step",        "Step:", 7),
-    TextField("score_max",   "Max Score:", 4),
-    TextField("moves_max",   "Max Moves:", 7),
-    TextField("game_max",    "Max Game:",  5),
-#   TextField("score_per_snake", "Score/Snake:", 4),
-    TextField("score_per_game",  "Score/Game:",  4),
-    TextField("moves_per_game",  "Moves/Game:",  7),
-    TextField("moves_per_apple", "Moves/Apple:", 4),
-    TextField("time",        "Time:", 7),
-    TextField("wins",        "Won:", 3),
+    TextField(Display.TEXT_STEP,        "Step:", 7),
+    TextField(Display.TEXT_SCORE_MAX,   "Max Score:", 4),
+    TextField(Display.TEXT_MOVES_MAX,   "Max Moves:", 7),
+    TextField(Display.TEXT_GAME_MAX,    "Max Game:",  5),
+#   TextField(Display.TEXT_SCORE_PER_SNAKE, "Score/Snake:", 4),
+    TextField(Display.TEXT_SCORE_PER_GAME,  "Score/Game:",  4),
+    TextField(Display.TEXT_MOVES_PER_GAME,  "Moves/Game:",  7),
+    TextField(Display.TEXT_MOVES_PER_APPLE, "Moves/Apple:", 4),
+    TextField(Display.TEXT_TIME,        "Time:", 7),
+    TextField(Display.TEXT_WINS,        "Won:", 3),
     # Put games last. If you have a lot of snakes this can go up very fast
-    TextField("games",       "Games:", 7),
+    TextField(Display.TEXT_GAMES,       "Games:", 7),
 ]
 
 # +
@@ -251,14 +251,6 @@ class DisplayPygame(Display):
             DisplayPygame._updates = []
 
 
-    def updated(self, rect):
-        DisplayPygame._updates.append(rect)
-
-
-    def rect_union(self, rect1, rect2):
-        return rect1.union(rect2)
-
-
     def events_key(self, now):
         keys = []
         if DisplayPygame._screen:
@@ -356,7 +348,7 @@ class DisplayPygame(Display):
         DisplayPygame._updates.append(rect)
 
 
-    def draw_block(self, w, x, y, color, update=True):
+    def draw_block(self, w, x, y, color, update = True, combine = None):
         rect = (x * self.BLOCK + self._window_x[w] + Display.EDGE,
                 y * self.BLOCK + self._window_y[w] + Display.EDGE,
                 self.DRAW_BLOCK,
@@ -364,6 +356,8 @@ class DisplayPygame(Display):
 
         # print("Draw %d (%d,%d): %d,%d,%d: [%d %d %d %d]" % ((w, x, y)+color+(rect)))
         rect = pygame.draw.rect(DisplayPygame._screen, DisplayPygame.COLORS[color], rect)
+        if combine:
+            rect = rect.union(combine)
         if update:
             DisplayPygame._updates.append(rect)
         return rect
