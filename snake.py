@@ -1249,20 +1249,25 @@ class Snakes:
             # This allows us to show the current plan.
             # It also makes debug messages during planning less confusing
             # since screen output represents the state during planning
-            pos = self.move_select(move_result)
+            plan = self.move_select(move_result)
             # Forgetting to return is an easy bug leading to confusing errors
-            assert pos is not None
+            assert plan is not None
 
             yield
 
             if self.debug:
                 self.move_debug()
 
-            move_result = self.move_evaluate(pos)
-            # Initial move_result has no "eaten"
-            self.move_collisions(display, pos, move_result)
+            # For each snake determine what happened (win, crash, eat, nothing)
+            move_result = self.move_evaluate(plan)
+            # Initial move_result has an "is_eat" but no "eaten" field
+
+            # Start a new snake for all finished snakes (win, crash)
+            self.move_collisions(display, plan, move_result)
+
+            # Update snake state with the result of the move
             # Modifies "is_eat" with collided and sets "eaten in move_result
-            self.move_execute(display, pos, move_result)
+            self.move_execute(display, plan, move_result)
 
 class SnakesRandom(Snakes):
     def __init__(self, *args, xy_head=False, xy_apple=False, **kwargs):
@@ -1745,8 +1750,9 @@ class SnakesQ(Snakes):
                 # so compensate by an apple
                 rewards[move_result.collided] += SnakesQ.REWARD_CRASH - SnakesQ.REWARD_APPLE
             # Don't punish the snake for winning!
+            # (a win is marked as a crash but the snake really got an apple)
             if move_result.won.size:
-                rewards[move_result.won] -= SnakesQ.REWARD_CRASH - SnakesQ.REWARD_APPLE
+                rewards[move_result.won] += SnakesQ.REWARD_APPLE - SnakesQ.REWARD_CRASH
             # move_result.print()
             # print("Rewards", rewards)
             if debug:
@@ -1825,9 +1831,18 @@ class SnakesQ(Snakes):
                if self.debug:
                    print("Nr Escaping=", escaping.size,
                          "Escaping[0]", escaping[0])
+                   # We have no easy way to check if snake self._debug_index
+                   # was selected for escape, so fake it by detecting if the
+                   # action changed.
+                   # We miss the case where it's changed to same
+                   old_action = action[self._debug_index]
                # We could also avoid crashing here
                action[escaping] = np.random.randint(self._q_table.shape[-1],
                                                     size = escaping.size)
+               if self.debug and action[self._debug_index] != old_action:
+                   print("Randomly set New action = %u (unloop)" %
+                         action[self._debug_index])
+
 
     # Kick a small fraction of all snakes
     def kick(self, action, symmetry_state):
@@ -1869,7 +1884,7 @@ class SnakesQ(Snakes):
                 permutations = permutations[hit]
 
             if self.debug and accept[self._debug_index] == 0:
-                print("Randomly set New action = %u" %
+                print("Randomly set New action = %u (kick)" %
                       action[self._debug_index])
 
 if arguments["--benchmark"]:

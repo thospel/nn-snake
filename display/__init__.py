@@ -1,6 +1,62 @@
 import time
 import math
 
+# +
+from dataclasses import dataclass
+
+@dataclass
+class TextField:
+    key:    str
+    prefix: str
+    format: str         = "%d"
+    initial_value: str  = "0"
+
+# +
+
+TEXT_SCORE           = "score"
+TEXT_GAME            = "game"
+TEXT_MOVES           = "moves"
+TEXT_WON             = "win"
+TEXT_SNAKE_ID        = "snake"
+
+TEXT_STEP            = "step"
+TEXT_SCORE_MAX       = "score_max"
+TEXT_MOVES_MAX       = "moves_max"
+TEXT_GAME_MAX        = "game_max"
+TEXT_SCORE_PER_GAME  = "score_per_game"
+TEXT_MOVES_PER_GAME  = "moves_per_game"
+TEXT_MOVES_PER_APPLE = "moves_per_apple"
+TEXT_SCORE_PER_SNAKE = "score_per_snake"
+TEXT_TIME            = "time"
+TEXT_WINS            = "wins"
+TEXT_GAMES           = "games"
+
+TEXTS_STATUS_PIT = [
+    TextField(TEXT_SCORE,    "Score:", format = "%3d"),
+    # TextField(TEXT_GAME,     "Game:",  format = "%2d"),
+    TextField(TEXT_MOVES,    "Moves:", format = "%4d"),
+    TextField(TEXT_WON,      "Won:",   format = "%d / %d"),
+    TextField(TEXT_SNAKE_ID, "Id:"),
+]
+
+TEXTS_STATUS = [
+    TextField(TEXT_STEP,        "Step:", format = "%4d"),
+    TextField(TEXT_SCORE_MAX,   "Max Score:", format = "%3d"),
+    TextField(TEXT_MOVES_MAX,   "Max Moves:", format = "%4d"),
+    TextField(TEXT_GAME_MAX,    "Max Game:",  format = "%3d"),
+#   TextField(TEXT_SCORE_PER_SNAKE, "Score/Snake:"),
+    TextField(TEXT_SCORE_PER_GAME,  "Score/Game:",
+              format = "%7.3f", initial_value = "---"),
+    TextField(TEXT_MOVES_PER_GAME,  "Moves/Game:",
+              format = "%7.3f", initial_value = "---"),
+    TextField(TEXT_MOVES_PER_APPLE, "Moves/Apple:",
+              format = "%6.3f", initial_value = "---"),
+    TextField(TEXT_TIME,        "Time:"),
+    # Put games last. If you have a lot of snakes this can go up very fast
+    TextField(TEXT_WINS,        "Won:", format = "%d / %d"),
+    # TextField(TEXT_GAMES,       "Games:"),
+]
+
 class Display:
     EDGE = 1
 
@@ -11,30 +67,11 @@ class Display:
     BODY       = 4
     COLLISION  = 5
 
-    TEXT_SCORE           = "score"
-    TEXT_GAME            = "game"
-    TEXT_MOVES           = "moves"
-    TEXT_WON             = "win"
-    TEXT_SNAKE_ID        = "snake"
-
-    TEXT_STEP            = "step"
-    TEXT_SCORE_MAX       = "score_max"
-    TEXT_MOVES_MAX       = "moves_max"
-    TEXT_GAME_MAX        = "game_max"
-    TEXT_SCORE_PER_GAME  = "score_per_game"
-    TEXT_MOVES_PER_GAME  = "moves_per_game"
-    TEXT_MOVES_PER_APPLE = "moves_per_apple"
-    TEXT_SCORE_PER_SNAKE = "score_per_snake"
-    TEXT_TIME            = "time"
-    TEXT_WINS            = "wins"
-    TEXT_GAMES           = "games"
-
     # Event polling time in paused mode.
     # Avoid too much CPU waste or even a busy loop in case fps == 0
     POLL_SLOW = 1/25
     POLL_MAX = POLL_SLOW * 1.5
     WAIT_MIN = 1/1000
-
 
     STARTED = 0
 
@@ -166,11 +203,38 @@ class Display:
     def start(self):
         Display.STARTED +=1
 
+        if not self.windows:
+            return
+
+        rect = self.start_graphics()
+
+        for text_field in TEXTS_STATUS:
+            self.text_register(text_field),
+
+        for text_field in TEXTS_STATUS_PIT:
+            self.text_pit_register(text_field)
+
+        return rect
 
     def stop(self):
         del self._snakes
         del self._moves
         Display.STARTED -=1
+
+
+    def start_graphics(self, key, prefix, **kwargs):
+        raise(NotImplementedError("start_graphics not implemented for " +
+                                   type(self).__name__))
+
+
+    def text_pit_register(self, text_field):
+        raise(NotImplementedError("text_pit_register not implemented for " +
+                                   type(self).__name__))
+
+
+    def text_register(key, text_field):
+        raise(NotImplementedError("text_register not implemented for " +
+                                   type(self).__name__))
 
 
     def draw_block(self, w, x, y, color, update=True):
@@ -194,7 +258,7 @@ class Display:
         # print(np.stack((apple_x, apple_y), axis=-1))
         for i, w, x, y in zip(i_index, w_index, apple_x, apple_y):
             self.draw_block(w, x, y, Display.APPLE)
-            self.draw_text(w, Display.TEXT_SCORE, score[i])
+            self.draw_text(w, TEXT_SCORE, score[i])
 
 
     def draw_move(self,
@@ -212,7 +276,11 @@ class Display:
             else:
                 # The current head becomes body
                 # (For length 1 snakes the following tail erase will undo this)
-                body_rect = self.draw_block(w, w_head_x_old[w], w_head_y_old[w], Display.BODY, update=False)
+                body_rect = self.draw_block(
+                    w, w_head_x_old[w], w_head_y_old[w], Display.BODY,
+                    update=False,
+                    x_delta = w_head_x_new[w] - w_head_x_old[w],
+                    y_delta = w_head_y_new[w] - w_head_y_old[w])
             if not is_eat[i]:
                 # Drop the tail if we didn't eat an apple
                 self.draw_block(w, w_tail_x[w], w_tail_y[w], Display.BACKGROUND)
@@ -220,7 +288,7 @@ class Display:
                 head_rect = self.draw_block(w, w_head_x_new[w], w_head_y_new[w], Display.HEAD, combine = body_rect)
             else:
                 self.draw_block(w, w_head_x_new[w], w_head_y_new[w], Display.HEAD)
-            self.draw_text(w, Display.TEXT_MOVES, w_nr_moves[w])
+            self.draw_text(w, TEXT_MOVES, w_nr_moves[w])
 
 
     def draw_collisions(self, i_index, w_index, pos, nr_games, nr_games_won):
@@ -235,9 +303,8 @@ class Display:
                 #                self.last_collision_x[w],
                 #                self.last_collision_y[w],
                 #                DisplayPygame.WALL)
-                self.draw_text(w, Display.TEXT_GAME, nr_games[i])
-                self.draw_text(w, Display.TEXT_WON,  nr_games_won[i])
-                # self.draw_text(w, Display.TEXT_SNAKE_ID, i)
+                self.draw_text(w, TEXT_WON, (nr_games_won[i], nr_games[i]))
+                # self.draw_text(w, TEXT_SNAKE_ID, i)
                 self.draw_pit_empty(w)
 
 
@@ -251,30 +318,31 @@ class Display:
             self.draw_pit_empty(w)
             self.draw_block(w, w_head_x[w], w_head_y[w], Display.HEAD)
 
-            self.draw_text(w, Display.TEXT_MOVES, snakes.nr_moves(i))
-            self.draw_text(w, Display.TEXT_GAME,  snakes.nr_games(i))
-            self.draw_text(w, Display.TEXT_WON,   snakes.nr_games_won(i))
-            self.draw_text(w, Display.TEXT_SNAKE_ID, i)
+            self.draw_text(w, TEXT_MOVES, snakes.nr_moves(i))
+            self.draw_text(w, TEXT_WON,   (snakes.nr_games_won(i), snakes.nr_games(i)))
+            self.draw_text(w, TEXT_SNAKE_ID, i)
 
 
     # Dislay the current state
     def draw_result(self, initial = False):
+        if not self.windows:
+            return
+
         snakes = self.snakes()
 
         # draw_text is optimized to not draw any value that didn't change
-        self.draw_text_summary(Display.TEXT_STEP, snakes.frame())
-        # self.draw_text_summary(Display.TEXT_SCORE_PER_SNAKE, snakes.score_total_snakes() / snakes._nr_snakes)
-        self.draw_text_summary(Display.TEXT_SCORE_MAX, snakes.score_max())
-        self.draw_text_summary(Display.TEXT_MOVES_MAX, snakes.nr_moves_max())
-        self.draw_text_summary(Display.TEXT_GAME_MAX,  snakes.nr_games_max())
-        self.draw_text_summary(Display.TEXT_MOVES_MAX, snakes.nr_moves_max())
-        self.draw_text_summary(Display.TEXT_GAMES,     snakes.nr_games_total())
-        self.draw_text_summary(Display.TEXT_WINS,      snakes.nr_games_won_total())
+        self.draw_text_summary(TEXT_STEP, snakes.frame())
+        # self.draw_text_summary(TEXT_SCORE_PER_SNAKE, snakes.score_total_snakes() / snakes._nr_snakes)
+        self.draw_text_summary(TEXT_SCORE_MAX, snakes.score_max())
+        self.draw_text_summary(TEXT_MOVES_MAX, snakes.nr_moves_max())
+        self.draw_text_summary(TEXT_GAME_MAX,  snakes.nr_games_max())
+        self.draw_text_summary(TEXT_MOVES_MAX, snakes.nr_moves_max())
+        self.draw_text_summary(TEXT_WINS,      (snakes.nr_games_won_total(), snakes.nr_games_total()))
         if snakes.nr_games_total():
-            self.draw_text_summary(Display.TEXT_SCORE_PER_GAME,  snakes.score_per_game())
-            self.draw_text_summary(Display.TEXT_MOVES_PER_GAME,  snakes.nr_moves_per_game())
+            self.draw_text_summary(TEXT_SCORE_PER_GAME,  snakes.score_per_game())
+            self.draw_text_summary(TEXT_MOVES_PER_GAME,  snakes.nr_moves_per_game())
         if snakes.score_total_games():
-            self.draw_text_summary(Display.TEXT_MOVES_PER_APPLE, snakes.nr_moves_per_apple())
+            self.draw_text_summary(TEXT_MOVES_PER_APPLE, snakes.nr_moves_per_apple())
 
         if initial:
             # Fake it (the real timers haven't started yet)
@@ -284,7 +352,7 @@ class Display:
             elapsed_sec = int(self.elapsed(time.monotonic()))
         if elapsed_sec != self._elapsed_sec_draw:
             self._elapsed_sec_draw = elapsed_sec
-            self.draw_text_summary(Display.TEXT_TIME, elapsed_sec)
+            self.draw_text_summary(TEXT_TIME, elapsed_sec)
 
 
     def timers_start(self):
@@ -304,6 +372,7 @@ class Display:
         if self._stepping:
             self._pause_time = self._time_monotonic_start
             self._pause_frame = self.snakes().frame()
+            self._stepping = False
             # When stepping the first frame doesn't count
         else:
             self._pause_time = 0
