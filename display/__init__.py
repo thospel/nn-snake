@@ -1,5 +1,6 @@
 import time
 import math
+import sys
 
 # +
 from dataclasses import dataclass
@@ -529,7 +530,8 @@ class Display:
 
 
     def update(self):
-        pass
+        if self.snakes().debug:
+            sys.stdout.flush()
 
 
     def events_process(self, now_monotonic):
@@ -613,7 +615,11 @@ class Display:
 
     def event_debug(self, now_monotonic = None):
         snakes = self.snakes()
-        snakes.debug = not snakes.debug
+        if snakes.debug:
+            sys.stdout.flush()
+            snakes.debug = False
+        else:
+            snakes.debug = True
 
 
     def event_dump(self, now_monotonic = None):

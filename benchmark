@@ -162,7 +162,7 @@ def benchmark(file, loops=1, git=False, tag=False, push=False):
     env["PYTHONHASHSEED"] = "1"
     speed = -1
     for i in range(loops):
-        s = run("taskset", "-c", "1", "python", file, "--benchmark",
+        s = run("taskset", "-c", "1", "python", file, "benchmark",
                 output_mandatory = True)
         s = int(s)
         print("Speed: %d steps/sec" % s)

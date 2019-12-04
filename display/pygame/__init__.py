@@ -365,6 +365,7 @@ class DisplayPygame(Display):
 
 
     def update(self):
+        super().update()
         if DisplayPygame._updates:
             if self._slow_updates:
                 self._time_monotone_start  = time.monotonic()

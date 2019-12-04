@@ -9,4 +9,3 @@ dependencies:
   - tensorboard
   - pip:
     - pygame
-# prefix: /home/ton/miniconda3/envs/snake
