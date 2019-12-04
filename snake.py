@@ -18,15 +18,20 @@
 """Snakes
 
 Usage:
-  snake.py [-f <file>] [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
+  snake.py greedy [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
+           [--width=<width>] [--height=<height>] [--frames=<frames>]
+           [--columns=columns] [--rows=rows] [--block=<block_size>]
+           [--wall=<wall>] [--pygame] [--dump-file=<file>] [--log-file=<log>]
+  snake.py q-table [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
            [--width=<width>] [--height=<height>] [--frames=<frames>]
            [--columns=columns] [--rows=rows] [--block=<block_size>]
            [--wall=<wall>] [--symmetry] [--pygame]
            [--vision-file=<file>] [--dump-file=<file>] [--log-file=<log>]
            [--learning-rate=<r>] [--discount <ratio>] [--accelerated]
+  snake.py -f <file>
   snake.py --benchmark
   snake.py (-h | --help)
-  snake..py --version
+  snake.py --version
 
 Options:
   -h --help               Show this screen
@@ -73,9 +78,6 @@ Key actions:
 
 """
 from docopt import docopt
-
-DEFAULTS = docopt(__doc__, [])
-# print(DEFAULTS)
 
 if __name__ == '__main__':
     arguments = docopt(__doc__, version='Snake 1.0')
@@ -626,8 +628,8 @@ class Snakes:
         return x + y * self.WIDTH1
 
     def __init__(self, nr_snakes=1,
-                 width     = int(DEFAULTS["--width"]),
-                 height    = int(DEFAULTS["--height"]),
+                 width     = 40,
+                 height    = 40,
                  view_x = None, view_y = None,
                  debug = False, xy_apple = True, xy_head = True):
         if nr_snakes <= 0:
@@ -1305,8 +1307,8 @@ class SnakesQ(Snakes):
                  xy_head = False,
                  vision = None,
                  wall_left = 0, wall_right = 0, wall_up = 0, wall_down = 0,
-                 learning_rate = float(DEFAULTS["--learning-rate"]),
-                 discount      = float(DEFAULTS["--discount"]),
+                 learning_rate = 0.1,
+                 discount      = 0.9,
                  accelerated   = False,
                  symmetry      = False,
                  **kwargs):
@@ -1904,30 +1906,37 @@ if arguments["--benchmark"]:
 columns    = int(arguments["--columns"])
 rows       = int(arguments["--rows"])
 nr_snakes  = int(arguments["--snakes"]) or rows*columns
-block_size = int(arguments["--block"])
 snake_kwargs = dict()
-if arguments["--vision-file"] is not None:
-    snake_kwargs["vision"] = VisionFile(arguments["--vision-file"])
-wall       = int(arguments["--wall"])
-learning_rate = float(arguments["--learning-rate"])
-discount      = float(arguments["--discount"])
-snakes = SnakesQ(nr_snakes = nr_snakes,
-                 accelerated = arguments["--accelerated"],
-                 symmetry    = arguments["--symmetry"],
-                 debug       = arguments["--debug"],
-                 width       = int(arguments["--width"]),
-                 height      = int(arguments["--height"]),
-                 wall_left   = wall, wall_right = wall,
-                 wall_up     = wall, wall_down = wall,
-                 learning_rate = learning_rate, discount = discount,
-                 **snake_kwargs)
+if arguments["greedy"]:
+    snake_class = Snakes
+elif arguments["q-table"]:
+    snake_class = SnakesQ
+    if arguments["--vision-file"] is not None:
+        snake_kwargs["vision"] = VisionFile(arguments["--vision-file"])
+    wall = int(arguments["--wall"])
+    snake_kwargs["wall_left"]  = wall
+    snake_kwargs["wall_right"] = wall
+    snake_kwargs["wall_up"]    = wall
+    snake_kwargs["wall_down"]  = wall
+    snake_kwargs["learning_rate"] = float(arguments["--learning-rate"])
+    snake_kwargs["discount"]      = float(arguments["--discount"])
+    snake_kwargs["accelerated"]   = arguments["--accelerated"]
+    snake_kwargs["symmetry"]      = arguments["--symmetry"]
+else:
+    raise(AssertionError("Unspecified snake type"))
+
+snakes = snake_class(nr_snakes = nr_snakes,
+                     debug     = arguments["--debug"],
+                     width     = int(arguments["--width"]),
+                     height    = int(arguments["--height"]),
+                     **snake_kwargs)
 
 # +
 display = Display(
     snakes,
     columns    = columns,
     rows       = rows,
-    block_size = block_size,
+    block_size = int(arguments["--block"]),
     log_file   = arguments["--log-file"],
     dump_file  = arguments["--dump-file"]
 )
