@@ -25,6 +25,7 @@ class SnakesQ(Snakes):
                  xy_head = False,
                  vision = None,
                  wall_left = 0, wall_right = 0, wall_up = 0, wall_down = 0,
+                 single        = False,
                  learning_rate = 0.1,
                  discount      = 0.9,
                  accelerated   = False,
@@ -57,9 +58,12 @@ class SnakesQ(Snakes):
                          view_y = view_y,
                          **kwargs)
 
+        self._single = single
         # self._rewards = np.empty(self._nr_snakes, dtype=SnakesQ.TYPE_FLOAT)
-        self._learning_rate = SnakesQ.TYPE_FLOAT(learning_rate / self.nr_snakes)
-        self._discount      = SnakesQ.TYPE_FLOAT(discount)
+        self._learning_rate = SnakesQ.TYPE_FLOAT(learning_rate)
+        if not self._single:
+            self._learning_rate /= self.nr_snakes
+        self._discount = SnakesQ.TYPE_FLOAT(discount)
         self._eat_frame = np_empty(self.nr_snakes, TYPE_MOVES)
         self.init_vision()
         self.init_wall(wall_left, wall_right, wall_up, wall_down)
@@ -357,9 +361,7 @@ class SnakesQ(Snakes):
         # debug = self.frame() % 100 == 0
         debug = self.debug
 
-        if debug: print("=" * 20, self.frame(), "=" * 20)
         # print(self._q_table)
-        if debug: print(self.snakes_string(1, 1))
 
         is_eat = move_result.is_eat
         head = self.head()
@@ -491,8 +493,13 @@ class SnakesQ(Snakes):
                 print("Update[%u][%u]" % (self._old_state[self._debug_index],
                                           self._old_action[self._debug_index]),
                       rewards[self._debug_index])
-            # Potentially need to multi-update the same position, so use ads.at
-            np.add.at(self._q_table, (self._old_state, self._old_action), rewards)
+            if self._single:
+                # Any state entry is only updated once. All other snakes trying
+                # to update it at the same time are wasted.
+                self._q_table[self._old_state, self._old_action] += rewards
+            else:
+                # Potentially need to multi-update the same state, so use ads.at
+                np.add.at(self._q_table, (self._old_state, self._old_action), rewards)
             if debug:
                 print("Q new", self._q_table[self._old_state[self._debug_index]])
             #if np.isnan(self._q_table).any():

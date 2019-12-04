@@ -77,13 +77,14 @@ class Display:
     STARTED = 0
 
     def __init__(self, snakes,
-                 rows       = 1,
-                 columns    = 2,
-                 block_size = 20,
-                 log_file   = "snakes.log.txt",
-                 dump_file  = "snakes.dump.txt",
-                 stepping   = False,
-                 caption    = "Snakes"):
+                 rows        = 1,
+                 columns     = 2,
+                 block_size  = 20,
+                 log_file    = "snakes.log.txt",
+                 dump_file   = "snakes.dump.txt",
+                 stream_file = "snakes.stream.%dx%d.rgb",
+                 stepping    = False,
+                 caption     = "Snakes"):
         self.rows    = rows
         self.columns = columns
         self.windows = rows*columns
@@ -92,6 +93,7 @@ class Display:
         self._log_file  = log_file
         self._log_fh = None
         self._dump_file = dump_file
+        self._stream_file = stream_file
 
         if not self.windows:
             return
@@ -207,6 +209,10 @@ class Display:
         if not self.windows:
             return
 
+        self._streaming = False
+        self._stream_fh = None
+        self._stream_warned = False
+
         rect = self.start_graphics()
 
         for text_field in TEXTS_STATUS:
@@ -217,9 +223,14 @@ class Display:
 
         return rect
 
+
     def stop(self):
+        if self._stream_fh:
+            self._stream_fh.close()
+        del self._stream_fh
         del self._snakes
         del self._moves
+        del self._stream_warned
         Display.STARTED -=1
 
 
@@ -251,6 +262,16 @@ class Display:
     def draw_text_summary(self, *args):
         raise(NotImplementedError("draw_text_summary not implemented for " +
                                    type(self).__name__))
+
+
+    def stream_geometry(self):
+        return 0, 0
+
+
+    def stream_image(self):
+        if not self._stream_warned:
+            print("stream_image not implemented for " + type(self).__name__)
+            self._stream_warned = True
 
 
     def draw_apples(self, i_index, w_index, apple, score):
@@ -532,6 +553,8 @@ class Display:
     def update(self):
         if self.snakes().debug:
             sys.stdout.flush()
+        if self._streaming:
+            self.stream_image()
 
 
     def events_process(self, now_monotonic):
@@ -561,6 +584,10 @@ class Display:
             self.event_dump(now_monotonic)
         elif key == "Q":
             self.event_quit(now_monotonic)
+        elif key == "c":
+            self.event_capture(now_monotonic)
+        elif key == "C":
+            self.event_toggle_stream(now_monotonic)
         elif self.snakes().debug:
             print("Unknown key <%s>" % key)
 
@@ -625,7 +652,32 @@ class Display:
     def event_dump(self, now_monotonic = None):
         self.dump()
         if self.snakes().debug:
-            print("Dumped to", self._dump_file, flush=True)
+            print("Dumped to", self._dump_file)
+
+
+    def event_capture(self, now_monotonic = None):
+        if self.snakes().debug:
+            print("event_capture not implemented for " + type(self).__name__)
+
+
+    def event_toggle_stream(self, now_monotonic = None):
+        if self._streaming:
+            # flush() not needed since we open without buffering
+            # self._stream_fh.flush()
+            self._stream_fh.close()
+            self._stream_fh = 0
+            self._streaming = False
+            print("Stop streaming")
+        else:
+            file = self._stream_file % self.stream_geometry()
+            if self._stream_fh is None:
+                self._stream_fh = open(file, "wb", buffering = 0)
+                print("Start streaming to", file)
+            else:
+                self._stream_fh = open(file, "ab", buffering = 0)
+                print("Resume streaming to", file)
+            self._streaming = True
+        # self._elapsed_sec_draw
 
 
     def event_quit(self, now_monotonic = None):

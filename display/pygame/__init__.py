@@ -382,6 +382,22 @@ class DisplayPygame(Display):
             DisplayPygame._updates = []
 
 
+    def stream_geometry(self):
+        if not DisplayPygame._screen:
+            return 0, 0
+        return DisplayPygame._screen.get_size()
+
+
+    def stream_image(self):
+        snakes = self.snakes()
+        if not DisplayPygame._screen:
+            if snakes.debug:
+                print("No screen, no stream")
+            return
+
+        self._stream_fh.write(pygame.image.tostring(DisplayPygame._screen, "RGB"))
+
+
     def events_key(self, now):
         keys = []
         if DisplayPygame._screen:
@@ -393,6 +409,19 @@ class DisplayPygame(Display):
                     elif event.type == KEYDOWN and event.key not in DisplayPygame.KEY_IGNORE:
                         keys.append(event.unicode)
         return keys
+
+
+    def event_capture(self, now_monotonic = None):
+        snakes = self.snakes()
+        if not DisplayPygame._screen:
+            if snakes.debug:
+                print("No screen, no capture")
+            return
+
+        file = "snakes.capture.%d.png" % snakes.frame()
+        pygame.image.save(DisplayPygame._screen, file)
+        if snakes.debug:
+            print("Captured", file)
 
 
     def draw_text(self, w, name, value):

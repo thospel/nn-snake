@@ -58,6 +58,7 @@ def print_xy(text, x, y):
     print(text)
     print(np.stack((x, y), axis=-1))
 
+
 def print_yx(text, pos):
     print_xy(text, pos[1], pos[0])
 
@@ -247,10 +248,12 @@ class Vision(dict):
             out += "\n";
         return out
 
+
 class VisionFile(Vision):
     def __init__(self, file):
         with open(file) as fh:
             super().__init__(fh.read())
+
 
 @dataclass
 class MoveResult:
@@ -468,11 +471,14 @@ class Snakes:
     assert SYMMETRY8_DH.dtype == TYPE_ID
     # print(SYMMETRY8_DH)
 
+
     def pos_from_yx(self, y, x):
         return x + y * self.WIDTH1
 
+
     def pos_from_xy(self, x, y):
         return x + y * self.WIDTH1
+
 
     def __init__(self, nr_snakes=1,
                  width     = 40,
@@ -568,6 +574,7 @@ class Snakes:
         self._nr_games_won = np_empty(nr_snakes, TYPE_GAMES)
         self._nr_games = np_empty(nr_snakes, TYPE_GAMES)
 
+
     def log_constants(self, fh):
         print("Script:", script(), file=fh)
         print("Script Hash:", file_object_hash(), file=fh)
@@ -579,8 +586,10 @@ class Snakes:
         print("View X:%7d" % self.VIEW_X,  file=fh)
         print("View_Y:%7d" % self.VIEW_Y,  file=fh)
 
+
     def dump_fh(self, fh):
         pass
+
 
     def rand_x(self, nr):
         offset_x = self.VIEW_X
@@ -590,6 +599,7 @@ class Snakes:
         offset_y = self.VIEW_Y
         return np.random.randint(offset_y, offset_y+self.HEIGHT, size=nr, dtype=TYPE_POS)
 
+
     def rand(self, nr):
         # Use lookup table
         return self._all0[np.random.randint(self._all0.size, size=nr, dtype=TYPE_POS)]
@@ -598,72 +608,93 @@ class Snakes:
         rand_y = self.rand_y(nr)
         return rand_x + rand_y * self.WIDTH1
 
+
     @property
     def nr_snakes(self):
         return self._nr_snakes
 
+
     def scores(self):
         return self._body_length
+
 
     def score(self, i):
         return self._body_length[i]
 
+
     def score_max(self):
         return self._score_max
+
 
     def score_total_snakes(self):
         return self._score_total_snakes
 
+
     def score_total_games(self):
         return self._score_total_games
+
 
     def score_per_game(self):
         if self.nr_games_total() <= 0:
             return math.inf * int(self.score_total_games())
         return self.score_total_games() / self.nr_games_total()
 
+
     def nr_moves(self, i):
         return self._cur_move - self._nr_moves[i]
+
 
     def nr_moves_max(self):
         return self._moves_max
 
+
     def nr_moves_total_games(self):
         return self._moves_total_games
+
 
     def nr_moves_per_game(self):
         if self.nr_games_total() <= 0:
             return math.inf * int(self.nr_moves_total_games())
         return self.nr_moves_total_games() / self.nr_games_total()
 
+
     def nr_moves_per_apple(self):
         if self.score_total_games() <= 0:
             return math.inf * int(self.nr_moves_total_games())
         return self.nr_moves_total_games() / self.score_total_games()
 
+
     def nr_games(self, i):
         return self._nr_games[i]
+
 
     def nr_games_max(self):
         return self._nr_games_max
 
+
     def nr_games_total(self):
         return self._nr_games_total
+
 
     def nr_games_won(self, i):
         return self._nr_games_won[i]
 
+
     def nr_games_won_total(self):
         return self._nr_games_won_total
+
 
     def head_x(self):
         return self._head_x
 
+
     def head_y(self):
         return self._head_y
 
+
     def head(self):
         return self._head
+
 
     def head_set(self, head_new):
         self._head = head_new
@@ -672,6 +703,7 @@ class Snakes:
         # print_xy("Head coordinates", self._head_x, self._head_y)
         # print(head_new)
         self._field[self._all_snakes, head_new] = 1
+
 
     def tail_set(self, values):
         # print("Eat", values)
@@ -687,6 +719,7 @@ class Snakes:
         # print_xy("tail pos", x, y))
         self._field[self._all_snakes, pos] = values
         return pos
+
 
     def snake_string(self, shape):
         apple_y, apple_x = self.yx0(self._apple[shape])
@@ -721,8 +754,10 @@ class Snakes:
             str += horizontal
         return str
 
+
     def snakes_string(self, rows, columns):
         return self.snake_string(np.arange(rows*columns).reshape(rows, columns))
+
 
     # Get coordinates in the pit WITH the edges
     # Does not work on negative numbers (is that so ? should work!)
@@ -731,14 +766,17 @@ class Snakes:
         # print_xy("yx", x, y)
         return y, x
 
+
     # Get coordinates in the pit WITHOUT the edges
     # Does not work on negative numbers since divmod rounds toward 0
     def yx0(self, array):
         y, x = np.divmod(array, self.WIDTH1)
         return y - self.VIEW_Y, x - self.VIEW_X
 
+
     def print_pos(self, text, pos):
         print_yx(text, self.yx(pos))
+
 
     # Sprinkle new apples in all pits where the snake ate them (todo)
     # On a 40x40 pit with the greedy algorithm about 3.5% of snakes need apples
@@ -769,6 +807,7 @@ class Snakes:
         if self._xy_apple:
             self._apple_y[old_todo], self._apple_x[old_todo] = self.yx(self._apple[old_todo])
         # self.print_pos("Placed apples", self._apple[old_todo])
+
 
     # Plot the shortest course to the apple completely ignoring any snake body
     def plan_greedy(self):
@@ -810,6 +849,7 @@ class Snakes:
             delta = dx + dy * self.WIDTH1
             return head+delta
 
+
     def plan_greedy_unblocked(self):
         pos = self.plan_greedy()
         collided = self._field[self._all_snakes, pos].nonzero()[0]
@@ -823,10 +863,12 @@ class Snakes:
             pos[collided] = pos_new
         return pos
 
+
     # Pick a completely random direction
     def plan_random(self):
         rand_dir = np.random.randint(Snakes.NR_DIRECTIONS, size=self._nr_snakes)
         return self.head() + self.DIRECTIONS[rand_dir]
+
 
     # Pick a random direction that isn't blocked
     # Or just a random direction if all are blocked
@@ -866,8 +908,10 @@ class Snakes:
 
         return pos
 
+
     def frame(self):
         return self._cur_move
+
 
     def move_evaluate(self, pos):
         is_eat       = pos == self._apple
@@ -903,6 +947,7 @@ class Snakes:
             collided     = is_collision.nonzero()[0],
             is_eat       = is_eat,
         )
+
 
     # In all pits where the snake won or lost we need to restart the game
     def move_collisions(self, display, pos, move_result):
@@ -967,6 +1012,7 @@ class Snakes:
         else:
             pos[collided] = self.rand(collided.size)
 
+
     def move_execute(self, display, pos, move_result):
         is_eat   = move_result.is_eat
         collided = move_result.collided
@@ -1007,7 +1053,11 @@ class Snakes:
         # self.print_pos("Apple", self._apple)
         # print("-------------------")
 
+
     def move_debug(self):
+        print("=" * 20, self.frame(), "=" * 20)
+        print(self.snakes_string(1, 1))
+
         if self._xy_apple:
             y, x = self.yx(self._apple)
             assert np.array_equal(x, self._apple_x)
@@ -1018,11 +1068,13 @@ class Snakes:
             assert np.array_equal(x, self._head_x)
             assert np.array_equal(y, self._head_y)
 
+
     # Default move_select for derived classes that don't provide one
     def move_select(self, move_result):
         pos = self.plan_greedy_unblocked()
         # self.print_pos("Move", pos)
         return pos
+
 
     # Setup initial variables for moving snakes
     def run_start(self, display):
@@ -1067,8 +1119,10 @@ class Snakes:
                                 self.yx(self._apple[self._all_windows]),
                                 self._body_length)
 
+
     def run_start_extra(self):
         pass
+
 
     def move_result_start(self):
         # Initial values for move_result
@@ -1077,6 +1131,7 @@ class Snakes:
         # Planners that care will have to test for <None> values or override
         # "run_start_results" with something that makes sense to them
         return MoveResult(collided = self._all_snakes)
+
 
     # We are done moving snakes. Report some statistics and cleanup
     def run_finish(self):
@@ -1091,9 +1146,13 @@ class Snakes:
         # self._nr_games_max = np.amax(self._nr_games)
         self._all_windows = None
 
+
     def move_generator(self, display):
         move_result = self.move_result_start()
         while True:
+            if self.debug:
+                self.move_debug()
+
             # Decide what we will do before showing the current state
             # This allows us to show the current plan.
             # It also makes debug messages during planning less confusing
@@ -1102,10 +1161,9 @@ class Snakes:
             # Forgetting to return is an easy bug leading to confusing errors
             assert plan is not None
 
+            # From this point on until move_execute is finished x_head()/y_head
+            # (if set) represent the plan while head() represents now
             yield
-
-            if self.debug:
-                self.move_debug()
 
             # For each snake determine what happened (win, crash, eat, nothing)
             move_result = self.move_evaluate(plan)

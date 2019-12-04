@@ -9,4 +9,6 @@ notes
 git_export.*
 snakes.dump*.txt
 snakes.log*.txt
+snakes.capture.*.png
+snakes.stream.*.rgb
 __pycache__

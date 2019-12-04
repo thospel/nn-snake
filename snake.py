@@ -25,7 +25,7 @@ Usage:
   snake.py q-table [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
            [--width=<width>] [--height=<height>] [--frames=<frames>]
            [--columns=columns] [--rows=rows] [--block=<block_size>]
-           [--wall=<wall>] [--symmetry] [--pygame]
+           [--wall=<wall>] [--symmetry] [--single] [--pygame]
            [--vision-file=<file>] [--dump-file=<file>] [--log-file=<log>]
            [--learning-rate=<r>] [--discount <ratio>] [--accelerated]
   snake.py -f <file>
@@ -56,7 +56,13 @@ Options:
                           [Default: snakes.log.txt]
   --dump-file=<file>      Which file to dump to on keypress
                           [Default: snakes.dump.txt]
-  -l --learning-rate=<r>  Learning rate (will get divided by number of snakes)
+  --single                Any one state can be updated at most once per frame
+                          Use this if all snakes tend to be in different states
+                          since it allows you to use an undivided learning rate
+                          (only reasonable if there are many states relative to
+                          the number of snakes)
+  -l --learning-rate=<r>  Learning rate
+                          (will be divided by number of snakes if not --single)
                           [Default: 0.1]
   --discount <ratio>      state to state Discount [Default: 0.99]
   --debug                 Run debug code
@@ -74,6 +80,15 @@ Key actions:
   =:          Restore the original frames per second
   d:          Toggle debug
   D:          Dump current state (without snake state)
+  c:          Capture window (currently pygame only)
+  C:          Toggle window stream (currently pygame only)
+              Post processing examples:
+               Make movie:
+                 ffmpeg -y -f rawvideo -s 200x200 -pix_fmt rgb24 -r 40 -i snakes.stream.200x200.rgb -an -vcodec h264 snakes.mp4
+               Make gif:
+                 ffmpeg -y -f rawvideo -s 880x440 -pix_fmt rgb24 -r 10 -i snakes.stream.880x440.rgb -an -vf palettegen palette.png
+                 ffmpeg -y -f rawvideo -s 880x440 -pix_fmt rgb24 -r 10 -i snakes.stream.880x440.rgb -i palette.png -an -lavfi paletteuse snakes.gif
+
 
 """
 from docopt import docopt
@@ -113,6 +128,7 @@ if arguments["greedy"] or arguments["benchmark"]:
 
     snake_class = Snakes
 elif arguments["q-table"]:
+    from snakes import VisionFile
     from snakes.qtable import SnakesQ
 
     snake_class = SnakesQ
@@ -123,6 +139,7 @@ elif arguments["q-table"]:
     snake_kwargs["wall_right"] = wall
     snake_kwargs["wall_up"]    = wall
     snake_kwargs["wall_down"]  = wall
+    snake_kwargs["single"]        = arguments["--single"]
     snake_kwargs["learning_rate"] = float(arguments["--learning-rate"])
     snake_kwargs["discount"]      = float(arguments["--discount"])
     snake_kwargs["accelerated"]   = arguments["--accelerated"]
