@@ -1,4 +1,4 @@
-from snakes import Snakes, Vision, np_empty, TYPE_MOVES, TYPE_UPOS, TYPE_ID
+from snakes import Snakes, Vision, np_empty, TYPE_MOVES, TYPE_POS, TYPE_UPOS, TYPE_ID
 import numpy as np
 
 
