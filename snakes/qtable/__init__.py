@@ -1,13 +1,13 @@
 from snakes import Snakes, Vision, np_empty, TYPE_MOVES, TYPE_POS, TYPE_UPOS, TYPE_ID
 import numpy as np
 
+TYPE_FLOAT    = np.float32
 
 class SnakesQ(Snakes):
-    TYPE_FLOAT    = np.float32
     TYPE_QSTATE   = np.uint32
     EPSILON_INV   = 10000
     REWARD_APPLE  = TYPE_FLOAT(1)
-    REWARD_CRASH  = TYPE_FLOAT(-100)
+    REWARD_CRASH  = TYPE_FLOAT(-10)
     # A small penalty for taking too long to get to an apple
     REWARD_MOVE   = TYPE_FLOAT(-0.001)
     # Small random disturbance to escape from loops
@@ -59,11 +59,11 @@ class SnakesQ(Snakes):
                          **kwargs)
 
         self._single = single
-        # self._rewards = np.empty(self._nr_snakes, dtype=SnakesQ.TYPE_FLOAT)
-        self._learning_rate = SnakesQ.TYPE_FLOAT(learning_rate)
+        # self._rewards = np.empty(self._nr_snakes, dtype=TYPE_FLOAT)
+        self._learning_rate = TYPE_FLOAT(learning_rate)
         if not self._single:
             self._learning_rate /= self.nr_snakes
-        self._discount = SnakesQ.TYPE_FLOAT(discount)
+        self._discount = TYPE_FLOAT(discount)
         self._eat_frame = np_empty(self.nr_snakes, TYPE_MOVES)
         self.init_vision()
         self.init_wall(wall_left, wall_right, wall_up, wall_down)
@@ -90,6 +90,7 @@ class SnakesQ(Snakes):
         else:
             self.NR_STATES_APPLE = 8
             self._vision_pos = self.pos_from_xy(vision.x, vision.y)
+
 
     def init_wall(self, wall_left, wall_right, wall_up, wall_down):
         # Make sure the user entered sane values
@@ -211,6 +212,7 @@ class SnakesQ(Snakes):
             # assert self._wall0.base is self._wall1
             # print(self._wall1)
 
+
     def init_q_table(self):
         nr_neighbours = len(self._vision_obj)
         self.NR_STATES_NEIGHBOUR = 2 ** nr_neighbours
@@ -229,14 +231,17 @@ class SnakesQ(Snakes):
             nr_actions = Snakes.NR_DIRECTIONS
 
         self._q_table = np.empty((self.NR_STATES, nr_actions),
-                                 dtype=SnakesQ.TYPE_FLOAT)
+                                 dtype=TYPE_FLOAT)
         print("Q table has %u states = %u wall * %u apple * %u neeighbour" %
               (self.NR_STATES,
                self.NR_STATES_WALL,
                self.NR_STATES_APPLE,
                self.NR_STATES_NEIGHBOUR))
 
-    def run_start_extra(self):
+
+    def run_start(self, display):
+        super().run_start(display)
+
         self._q_table.fill(SnakesQ.REWARD0)
 
         # Prefill obvious collisions
@@ -265,6 +270,7 @@ class SnakesQ(Snakes):
 
         self._eat_frame.fill(self.frame())
 
+
     def print_qtable(self, fh):
         nr_neighbours = len(self._vision_obj)
         bits = [0] * nr_neighbours
@@ -291,6 +297,7 @@ class SnakesQ(Snakes):
                 if bits[i]:
                     break
 
+
     def log_constants(self, fh):
         super().log_constants(fh)
 
@@ -313,6 +320,7 @@ class SnakesQ(Snakes):
         print("Reward rand:  ", SnakesQ.REWARD_RAND,   file=fh)
         print("Reward init:  ", SnakesQ.REWARD0,       file=fh)
 
+
     def dump_fh(self, fh):
         super().dump_fh(fh)
 
@@ -321,8 +329,10 @@ class SnakesQ(Snakes):
             self.print_qtable(fh)
         print("EOT", file=fh)
 
+
     def state(self, neighbour, apple, wall=0):
         return apple + self.NR_STATES_APPLE * (wall + self.NR_STATES_WALL * neighbour)
+
 
     def unstate(self, state):
         state_rest, apple = divmod(state,      self.NR_STATES_APPLE)
@@ -354,10 +364,12 @@ class SnakesQ(Snakes):
         # Todo: Decode the wall
         return apple, wall, field
 
+
     def vision_from_state(self, state):
         apple, field = self.unstate(state)
 
-    def move_select(self, move_result):
+
+    def move_select(self, move_result, display):
         # debug = self.frame() % 100 == 0
         debug = self.debug
 
@@ -375,10 +387,10 @@ class SnakesQ(Snakes):
             y, x = self.yx(head)
 
         if self._xy_apple:
-            apple_x = self._apple_x
-            apple_y = self._apple_y
+            apple_x = self.apple_x()
+            apple_y = self.apple_y()
         else:
-            apple_y, apple_x = self.yx(self._apple)
+            apple_y, apple_x = self.yx(self.apple())
         # print_xy("apple", apple_x, apple_y)
 
         dx = np.sign(apple_x - x)
@@ -542,6 +554,7 @@ class SnakesQ(Snakes):
         else:
             direction = action
         return head + self.DIRECTIONS[direction]
+
 
     # Detect starving snakes. They are probably looping
     def unloop(self, action):

@@ -31,7 +31,8 @@ COLORS = [
     QColor(0, 255, 0),
     QColor(200, 200, 0),
     QColor(160, 160, 160),
-    QColor(255, 0, 0)
+    QColor(255, 0, 0),
+    QColor(255, 255, 0)
 ]
 
 EDGE_SHOWN_X = 1/2
@@ -163,9 +164,12 @@ class Pit(QWidget):
             x += (pixmap.width() - side_x) / 2
         # print("Viewport", x, y, snakes.WIDTH * unit, snakes.HEIGHT * unit)
         painter.setViewport(x, y, snakes.WIDTH * unit, snakes.HEIGHT * unit)
-        # print("Window", SCALE * snakes.VIEW_X, SCALE * snakes.VIEW_Y,
+        self.X0 = SCALE * snakes.VIEW_X
+        self.Y0 = SCALE * snakes.VIEW_Y
+        # print("Window", self.X0, self.Y0,
         #                 SCALE * snakes.WIDTH,  SCALE * snakes.HEIGHT)
-        painter.setWindow(SCALE * snakes.VIEW_X, SCALE * snakes.VIEW_Y,
+        # Values of X and Y that will paint to the top left of the viewport
+        painter.setWindow(self.X0, self.Y0,
                           SCALE * snakes.WIDTH,  SCALE * snakes.HEIGHT)
         self._transform = painter.combinedTransform()
 
@@ -190,13 +194,32 @@ class Pit(QWidget):
         self._status.draw_text(key, value)
 
 
-    def draw_block(self, x, y, color,
-                   update=True, combine=None, x_delta = None, y_delta = None):
-        painter = self._painter
+    def draw_line(self, x0, y0, x1, y1, color, update = True, combine = None):
+        if x0 == x1 and y1 > y0:
+            rect = QRect(SCALE * x0, SCALE * y0, Display.EDGE, (y1-y0) * SCALE+Display.EDGE)
 
+        elif y0 == y1 and x1 > x0:
+            rect = QRect(SCALE * x0, SCALE * y0, (x1-x0) * SCALE+Display.EDGE, Display.EDGE)
+        else:
+            raise(NotImplementedError("General line drawing not implemented for qt5"))
+
+        painter = self._painter
         brush = self._brush
         brush.setColor(COLORS[color])
+        painter.fillRect(rect, brush)
+        rect = painter.combinedTransform().mapRect(rect)
 
+        if combine:
+            rect |= combine
+        if update:
+            self._label.update(rect)
+            return None
+        else:
+            return rect
+
+
+    def draw_block(self, background, x, y, color,
+                   update=True, combine=None, x_delta = None, y_delta = None):
         if x_delta:
             if x_delta > 0:
                 rect = QRect(SCALE * x + Display.EDGE, SCALE * y + Display.EDGE,
@@ -217,8 +240,15 @@ class Pit(QWidget):
             rect = QRect(SCALE * x + Display.EDGE, SCALE * y + Display.EDGE,
                          BLOCK, BLOCK)
 
-        painter.fillRect(rect, brush)
+        painter = self._painter
+        if color == Display.BACKGROUND and background:
+            painter.drawPixmap(rect, background, rect.translated(-self.X0, -self.Y0))
+        else:
+            brush = self._brush
+            brush.setColor(COLORS[color])
+            painter.fillRect(rect, brush)
         rect = painter.combinedTransform().mapRect(rect)
+
         if combine:
             rect |= combine
         if update:
@@ -228,16 +258,31 @@ class Pit(QWidget):
             return rect
 
 
-    def draw_pit_empty(self, snakes):
-        painter = self._painter
-
-        brush = self._brush
-        brush.setColor(COLORS[Display.BACKGROUND])
-
-        rect = QRect(SCALE * snakes.VIEW_X, SCALE * snakes.VIEW_Y,
+    def draw_pit_empty(self, snakes, background):
+        rect = QRect(self.X0, self.Y0,
                      SCALE * snakes.WIDTH,  SCALE * snakes.HEIGHT)
-        painter.fillRect(rect, brush)
+
+        painter = self._painter
+        if background:
+            painter.drawPixmap(rect, background, rect.translated(-self.X0, -self.Y0))
+        else:
+            brush = self._brush
+            brush.setColor(COLORS[Display.BACKGROUND])
+            painter.fillRect(rect, brush)
+
         rect = painter.combinedTransform().mapRect(rect)
+        self._label.update(rect)
+
+
+    def image_fetch(self):
+        return self._label.pixmap()
+
+
+    def viewport_fetch(self):
+        return self._painter.viewport()
+
+
+    def changed(self, rect):
         self._label.update(rect)
 
 
@@ -391,15 +436,19 @@ class DisplayQt5(Display):
 
 
     def draw_pit_empty(self, w):
-        self._screen.pit(w).draw_pit_empty(self.snakes())
+        self._screen.pit(w).draw_pit_empty(self.snakes(), self._background)
 
 
     def loop(self):
         app.exec_()
 
 
-    def draw_block(self, w, x, y, color, **kwargs):
-        return self._screen.pit(w).draw_block(x, y, color, **kwargs)
+    def draw_line(self, w, *args, **kwargs):
+        return self._screen.pit(w).draw_line(*args, **kwargs)
+
+
+    def draw_block(self, w, *args, **kwargs):
+        return self._screen.pit(w).draw_block(self._background, *args, **kwargs)
 
 
     def draw_text(self, w, key, value):
@@ -408,3 +457,14 @@ class DisplayQt5(Display):
 
     def draw_text_summary(self, key, value):
         self._screen.draw_text(key, value)
+
+
+    def image_save(self, w):
+        viewport = self._screen.pit(w).viewport_fetch()
+        source = self._screen.pit(w).image_fetch().copy(viewport)
+        snakes = self.snakes()
+        self._background = source.scaled(SCALE * snakes.WIDTH,  SCALE * snakes.HEIGHT)
+
+
+    def changed(self, w, rect):
+        self._screen.pit(w).changed(rect)

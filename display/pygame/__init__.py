@@ -261,7 +261,8 @@ class DisplayPygame(Display):
         (0, 255, 0),
         (200, 200, 0),
         (160, 160, 160),
-        (255, 0, 0)
+        (255, 0, 0),
+        (255, 255, 0)
     ]
 
     # we test these at the start of some functions
@@ -398,7 +399,14 @@ class DisplayPygame(Display):
         self._stream_fh.write(pygame.image.tostring(DisplayPygame._screen, "RGB"))
 
 
-    def events_key(self, now):
+    def wait_key(self, update = True):
+        if update:
+            self.update()
+        while not self.events_key():
+            time.sleep(0.1)
+
+
+    def events_key(self, now = None):
         keys = []
         if DisplayPygame._screen:
             events = pygame.event.get()
@@ -424,6 +432,10 @@ class DisplayPygame(Display):
             print("Captured", file)
 
 
+    def changed(self, w, rect):
+        DisplayPygame._updates.append(rect)
+
+
     def draw_text(self, w, name, value):
         self._text_status_pit[w].draw_text(name, value)
 
@@ -433,12 +445,17 @@ class DisplayPygame(Display):
 
 
     def draw_pit_empty(self, w):
-        rect = (self._window_x[w] - self.OFFSET_X + self.BLOCK,
-                self._window_y[w] - self.OFFSET_Y + self.BLOCK,
-                self.WINDOW_X - 2 * self.BLOCK,
-                self.WINDOW_Y - 2 * self.BLOCK)
-        rect = pygame.draw.rect(DisplayPygame._screen,
-                                DisplayPygame.COLORS[Display.BACKGROUND], rect)
+        if self._background:
+            rect = DisplayPygame._screen.blit(
+                self._background, (self._window_x[w], self._window_y[w]))
+        else:
+            rect = (self._window_x[w] - self.OFFSET_X + self.BLOCK,
+                    self._window_y[w] - self.OFFSET_Y + self.BLOCK,
+                    self.WINDOW_X - 2 * self.BLOCK,
+                    self.WINDOW_Y - 2 * self.BLOCK)
+            rect = pygame.draw.rect(
+                DisplayPygame._screen,
+                DisplayPygame.COLORS[Display.BACKGROUND], rect)
         DisplayPygame._updates.append(rect)
 
 
@@ -472,9 +489,31 @@ class DisplayPygame(Display):
                     self.DRAW_BLOCK, self.DRAW_BLOCK)
 
         # print("Draw %d (%d,%d): %d,%d,%d: [%d %d %d %d]" % ((w, x, y)+color+(rect)))
-        rect = pygame.draw.rect(DisplayPygame._screen, DisplayPygame.COLORS[color], rect)
+        if color == Display.BACKGROUND and self._background:
+            rect = DisplayPygame._screen.blit(
+                self._background, rect, area = (x * self.BLOCK,
+                                                y * self.BLOCK,
+                                                self.BLOCK, self.BLOCK))
+        else:
+            rect = pygame.draw.rect(DisplayPygame._screen, DisplayPygame.COLORS[color], rect)
         if combine:
             rect = rect.union(combine)
         if update:
             DisplayPygame._updates.append(rect)
         return rect
+
+
+    def draw_line(self, w, x0, y0, x1, y1, color, update = True, combine = None):
+        pos0 = (x0 * self.BLOCK + self._window_x[w], y0 * self.BLOCK + self._window_y[w])
+        pos1 = (x1 * self.BLOCK + self._window_x[w], y1 * self.BLOCK + self._window_y[w])
+        rect = pygame.draw.line(DisplayPygame._screen, DisplayPygame.COLORS[color], pos0, pos1)
+        if combine:
+            rect = rect.union(combine)
+        if update:
+            DisplayPygame._updates.append(rect)
+        return rect
+
+
+    def image_save(self, w = 0):
+        self._background = pygame.Surface((self.WINDOW_X, self.WINDOW_Y), depth=DisplayPygame._screen)
+        self._background.blit(DisplayPygame._screen, (self._window_x[w], self._window_y[w]))

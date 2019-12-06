@@ -20,11 +20,11 @@ At the time of writing the following steps work on linux:
 
 ```
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-# I answered all prompt with the defaults
+# I answered all prompts with the defaults
 sh Miniconda3-latest-Linux-x86_64.sh
 ```
 
-Now that you have [Conda](https://conda.io), go to the directory where you cloned this git repository.
+Now that you have [Conda](https://conda.io), go to the directory where you cloned this git repository:
 
 ```
 # cd <your snake directory>
@@ -64,7 +64,7 @@ and
 Check if your setup works by simply doing:
 
 ```
-./snake.py
+./snake.py greedy
 ```
 
 (You can quit by closing the window or pressing `Q`)
@@ -87,12 +87,16 @@ Usage:
            [--width=<width>] [--height=<height>] [--frames=<frames>]
            [--columns=columns] [--rows=rows] [--block=<block_size>]
            [--wall=<wall>] [--pygame] [--dump-file=<file>] [--log-file=<log>]
-  snake.py q-table [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
+  snake.py q-table [--debug] [--stepping] [--fps=<fps>]
            [--width=<width>] [--height=<height>] [--frames=<frames>]
            [--columns=columns] [--rows=rows] [--block=<block_size>]
            [--wall=<wall>] [--symmetry] [--single] [--pygame]
            [--vision-file=<file>] [--dump-file=<file>] [--log-file=<log>]
            [--learning-rate=<r>] [--discount <ratio>] [--accelerated]
+  snake.py cycle [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
+           [--width=<width>] [--height=<height>] [--frames=<frames>]
+           [--columns=columns] [--rows=rows] [--block=<block_size>]
+           [--pygame] [--dump-file=<file>] [--log-file=<log>]
   snake.py -f <file>
   snake.py benchmark
   snake.py (-h | --help)

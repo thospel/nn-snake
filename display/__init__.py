@@ -67,6 +67,7 @@ class Display:
     HEAD       = 3
     BODY       = 4
     COLLISION  = 5
+    TRACE      = 6
 
     # Event polling time in paused mode.
     # Avoid too much CPU waste or even a busy loop in case fps == 0
@@ -205,11 +206,13 @@ class Display:
 
     def start(self):
         Display.STARTED +=1
+        self._streaming = False
 
         if not self.windows:
             return
 
-        self._streaming = False
+        self._background = None
+
         self._stream_fh = None
         self._stream_warned = False
 
@@ -225,12 +228,17 @@ class Display:
 
 
     def stop(self):
-        if self._stream_fh:
-            self._stream_fh.close()
-        del self._stream_fh
+        del self._streaming
         del self._snakes
         del self._moves
-        del self._stream_warned
+
+        if self.windows:
+            del self._background
+            del self._stream_warned
+            if self._stream_fh:
+                self._stream_fh.close()
+            del self._stream_fh
+
         Display.STARTED -=1
 
 
@@ -249,6 +257,16 @@ class Display:
                                    type(self).__name__))
 
 
+    def image_save(self, w = 0):
+        raise(NotImplementedError("image_save not implemented for " +
+                                   type(self).__name__))
+
+
+    def draw_line(self, w, x0, y0, x1, y1, color, update = True, combine = None):
+        raise(NotImplementedError("draw_line not implemented for " +
+                                   type(self).__name__))
+
+
     def draw_block(self, w, x, y, color, update=True):
         raise(NotImplementedError("draw_block not implemented for " +
                                    type(self).__name__))
@@ -261,6 +279,16 @@ class Display:
 
     def draw_text_summary(self, *args):
         raise(NotImplementedError("draw_text_summary not implemented for " +
+                                   type(self).__name__))
+
+
+    def changed(self, w, rect):
+        raise(NotImplementedError("changed not implemented for " +
+                                   type(self).__name__))
+
+
+    def wait_key(self, *args):
+        raise(NotImplementedError("wait_key not implemented for " +
                                    type(self).__name__))
 
 
@@ -461,7 +489,6 @@ class Display:
         self.start()
         self.log_open()
         snakes.run_start(self)
-        snakes.run_start_extra()
         self._moves = snakes.move_generator(self)
 
         # This is not so much a move as initializing everything

@@ -28,8 +28,12 @@ Usage:
            [--wall=<wall>] [--symmetry] [--single] [--pygame]
            [--vision-file=<file>] [--dump-file=<file>] [--log-file=<log>]
            [--learning-rate=<r>] [--discount <ratio>] [--accelerated]
-  snake.py -f <file>
+  snake.py cycle [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
+           [--width=<width>] [--height=<height>] [--frames=<frames>]
+           [--columns=columns] [--rows=rows] [--block=<block_size>]
+           [--pygame] [--show-cycle] [--dump-file=<file>] [--log-file=<log>]
   snake.py benchmark
+  snake.py -f <file>
   snake.py (-h | --help)
   snake.py --version
 
@@ -49,8 +53,9 @@ Options:
   --wall=<wall>           Have state for distance from wall up to <wall>
                           [Default: 2]
   --symmetry              Apply dihedral symmetry
-  --pygame		  Use pygame for output
   --vision-file=<file>    Read snake vision from file
+  --show-cycle            Show the Hamiltonian cycle on the background
+  --pygame		  Use pygame for output (default is qt5)
   --log-file=<file>       Write to logfile. Use an empty string if you
                           explicitely don't want any logging
                           [Default: snakes.log.txt]
@@ -144,6 +149,10 @@ elif arguments["q-table"]:
     snake_kwargs["discount"]      = float(arguments["--discount"])
     snake_kwargs["accelerated"]   = arguments["--accelerated"]
     snake_kwargs["symmetry"]      = arguments["--symmetry"]
+elif arguments["cycle"]:
+    from snakes.hamiltonian import SnakesH
+    snake_class = SnakesH
+    snake_kwargs["show_cycle"]    = arguments["--show-cycle"]
 else:
     raise(AssertionError("Unspecified snake type"))
 

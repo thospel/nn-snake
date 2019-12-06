@@ -684,6 +684,18 @@ class Snakes:
         return self._nr_games_won_total
 
 
+    def apple_x(self):
+        return self._apple_x
+
+
+    def apple_y(self):
+        return self._apple_y
+
+
+    def apple(self):
+        return self._apple
+
+
     def head_x(self):
         return self._head_x
 
@@ -705,6 +717,18 @@ class Snakes:
         self._field[self._all_snakes, head_new] = 1
 
 
+    def tail(self):
+        # print("body length", self._body_length)
+
+        # Bring potentially large cur_move into a reasonable range
+        # so tail_offset will not use some large integer type
+        offset = self._cur_move & self.MASK
+        # print("Offset", offset)
+        tail_offset = (offset - self._body_length) & self.MASK
+        # print("tail offset", tail_offset)
+        return self._snake_body[self._all_snakes, tail_offset]
+
+
     def tail_set(self, values):
         # print("Eat", values)
         # print("body length", self._body_length)
@@ -716,7 +740,7 @@ class Snakes:
         tail_offset = (offset - self._body_length) & self.MASK
         # print("tail offset", tail_offset)
         pos = self._snake_body[self._all_snakes, tail_offset]
-        # print_xy("tail pos", x, y))
+        # self.print_pos("Tail pos", pos)
         self._field[self._all_snakes, pos] = values
         return pos
 
@@ -809,8 +833,55 @@ class Snakes:
         # self.print_pos("Placed apples", self._apple[old_todo])
 
 
+    # If the apple is at position (x, y) relative to the head, then if you put
+    # numbers around the head like this:
+    #         y
+    #      -x # x
+    #        -y
+    # and then select the largest value you will in fact move towards the apple
+    # This function sets up such an array for each head
+    def apple_distance(self):
+        if self._xy_head:
+            head = None
+            head_x = self.head_x()
+            head_y = self.head_y()
+        else:
+            head = self.head()
+            head_y, head_x = self.yx(head)
+
+        if self._xy_apple:
+            apple_x = self.apple_x()
+            apple_y = self.apple_y()
+        else:
+            apple_y, apple_x = self.yx(self.apple())
+
+        distance = np.empty((4, self.nr_snakes), dtype = TYPE_POS)
+        # Signs of y are reversed from normal cartesian because y is *DOWN*
+        distance[0] = apple_x - head_x
+        distance[1] = head_y  - apple_y
+        distance[2] = head_x  - apple_x
+        distance[3] = apple_y - head_y
+
+        return distance, head, head_x, head_y
+
+
     # Plot the shortest course to the apple completely ignoring any snake body
     def plan_greedy(self):
+        if False:
+            # The version below works but is notably slower
+            distance, head, head_x, head_y = self.apple_distance()
+            direction = distance.argmax(axis=0)
+
+            if self._xy_head:
+                # This updates self._head_x since head_x IS self._head_x.
+                head_x += Snakes.DIRECTIONS4_X[direction]
+                head_y += Snakes.DIRECTIONS4_Y[direction]
+                return head_x + head_y * self.WIDTH1
+            else:
+                delta = self.DIRECTIONS[direction]
+                return head+delta
+
+
         if self._xy_head:
             x = self.head_x()
             y = self.head_y()
@@ -1070,7 +1141,7 @@ class Snakes:
 
 
     # Default move_select for derived classes that don't provide one
-    def move_select(self, move_result):
+    def move_select(self, move_result, display):
         pos = self.plan_greedy_unblocked()
         # self.print_pos("Move", pos)
         return pos
@@ -1120,10 +1191,6 @@ class Snakes:
                                 self._body_length)
 
 
-    def run_start_extra(self):
-        pass
-
-
     def move_result_start(self):
         # Initial values for move_result
         # This is for planners that want to know about what happened on
@@ -1157,7 +1224,7 @@ class Snakes:
             # This allows us to show the current plan.
             # It also makes debug messages during planning less confusing
             # since screen output represents the state during planning
-            plan = self.move_select(move_result)
+            plan = self.move_select(move_result, display)
             # Forgetting to return is an easy bug leading to confusing errors
             assert plan is not None
 
@@ -1181,10 +1248,10 @@ class SnakesRandom(Snakes):
     def __init__(self, *args, xy_head=False, xy_apple=False, **kwargs):
         super().__init__(*args, xy_head=False, xy_apple=False, **kwargs)
 
-    def move_select(self, move_result):
+    def move_select(self, move_result, display):
         return self.plan_random()
 
 
 class SnakesRandomUnblocked(Snakes):
-    def move_select(self, move_result):
+    def move_select(self, move_result, display):
         return self.plan_random_unblocked(self._all_snakes)
