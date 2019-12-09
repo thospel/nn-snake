@@ -308,8 +308,8 @@ class DisplayPygame(Display):
 
 
     def start(self):
-        rect = super().start()
-        DisplayPygame._updates = [rect]
+        rects = super().start()
+        DisplayPygame._updates = rects
 
 
     def start_graphics(self):
@@ -337,7 +337,7 @@ class DisplayPygame(Display):
         rect = 0, 0, self.WINDOW_X * self.columns, self.WINDOW_Y * self.rows
         rect = pygame.draw.rect(DisplayPygame._screen,
                                 DisplayPygame.COLORS[Display.WALL], rect)
-        return rect
+        return [rect]
 
 
     # Don't do a stop() in __del__ since object desctruction can be delayed

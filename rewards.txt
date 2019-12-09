@@ -1,0 +1,9 @@
+apple:   1
+crash: -10
+# A small penalty for taking too long to get to an apple
+move:   -0.001
+# Small random disturbance to escape from loops
+rand:    0.001
+# Prefill with 0 is enough to encourage some early exploration since
+# we have a negative reward for moving
+initial: 0

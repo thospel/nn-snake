@@ -1,20 +1,73 @@
 from snakes import Snakes, Vision, np_empty, TYPE_MOVES, TYPE_POS, TYPE_UPOS, TYPE_ID
 import numpy as np
+import re
+from dataclasses import dataclass
+
 
 TYPE_FLOAT    = np.float32
+
+@dataclass
+class Rewards():
+    apple: TYPE_FLOAT
+    crash: TYPE_FLOAT
+    move:  TYPE_FLOAT
+    rand:  TYPE_FLOAT
+    initial: TYPE_FLOAT
+
+
+    @classmethod
+    def parse_file(cls, file):
+        with open(file, "r") as fh:
+            return cls.parse(fh.read())
+
+
+    @classmethod
+    def parse(cls, str):
+        rewards = {
+            "apple":   None,
+            "crash":   None,
+            "move":    None,
+            "rand":    None,
+            "initial": None
+        }
+
+        for line in str.splitlines():
+            line = re.sub(r"#.*", "", line).strip()
+            if line == "":
+                continue
+            match = re.fullmatch(r"(\w+)\s*:\s*([+-]?[0-9]+(?:\.[0-9]*)?)", line)
+            if not match:
+                raise(ValueError("Could not parse: " + line))
+            key, value = match.groups()
+            if key not in rewards:
+                raise(ValueError("Unknown key: " + key))
+            if rewards[key] is not None:
+                raise(ValueError("Multiple key: " + key))
+            rewards[key] = TYPE_FLOAT(value)
+        missing = [key for key in rewards if rewards[key] is None]
+        if missing:
+            raise(ValueError("Missing key: " + ", ".join(missing)))
+        return cls(**rewards)
+
+
+    @classmethod
+    def default(cls):
+        return cls.parse("""
+		apple:   1
+		crash: -10
+		# A small penalty for taking too long to get to an apple
+		move:   -0.001
+		# Small random disturbance to escape from loops
+		rand:    0.001
+		# Prefill with 0 is enough to encourage some early exploration
+		# since we have a negative reward for moving
+		initial: 0
+        """)
+
 
 class SnakesQ(Snakes):
     TYPE_QSTATE   = np.uint32
     EPSILON_INV   = 10000
-    REWARD_APPLE  = TYPE_FLOAT(1)
-    REWARD_CRASH  = TYPE_FLOAT(-10)
-    # A small penalty for taking too long to get to an apple
-    REWARD_MOVE   = TYPE_FLOAT(-0.001)
-    # Small random disturbance to escape from loops
-    REWARD_RAND   =  TYPE_FLOAT(0.001)
-    # Prefill with 0 is enough to encourage some early exploration since
-    # we have a negative reward for moving
-    REWARD0       = TYPE_FLOAT(0)
     # LOOP is in units of AREA
     LOOP_MAX      = 2
     LOOP_ESCAPE   = 1
@@ -24,6 +77,7 @@ class SnakesQ(Snakes):
                  view_x = None, view_y = None,
                  xy_head = False,
                  vision = None,
+                 reward_file = None,
                  wall_left = 0, wall_right = 0, wall_up = 0, wall_down = 0,
                  single        = False,
                  learning_rate = 0.1,
@@ -32,6 +86,10 @@ class SnakesQ(Snakes):
                  symmetry      = False,
                  **kwargs):
 
+        if reward_file is None:
+            self._rewards = Rewards.default()
+        else:
+            self._rewards = Rewards.parse_file(reward_file)
         self._accelerated = accelerated
         self._symmetry    = symmetry
         if vision is None:
@@ -232,7 +290,7 @@ class SnakesQ(Snakes):
 
         self._q_table = np.empty((self.NR_STATES, nr_actions),
                                  dtype=TYPE_FLOAT)
-        print("Q table has %u states = %u wall * %u apple * %u neeighbour" %
+        print("Q table has %u states = %u wall * %u apple * %u neighbour" %
               (self.NR_STATES,
                self.NR_STATES_WALL,
                self.NR_STATES_APPLE,
@@ -242,7 +300,9 @@ class SnakesQ(Snakes):
     def run_start(self, display):
         super().run_start(display)
 
-        self._q_table.fill(SnakesQ.REWARD0)
+        self._q_table.fill(self._rewards.initial)
+        self._old_state  = [None] * self.HISTORY
+        self._old_action = [None] * self.HISTORY
 
         # Prefill obvious collisions
         if self._accelerated:
@@ -266,7 +326,7 @@ class SnakesQ(Snakes):
                     i = self._vision_obj[y+0, x+0]
                     bit = SnakesQ.TYPE_QSTATE(1 << i)
                     hit = (n & bit) == bit
-                    q_table[hit,:, iterator.iterindex] = SnakesQ.REWARD_CRASH
+                    q_table[hit,:, iterator.iterindex] = self._rewards.crash
 
         self._eat_frame.fill(self.frame())
 
@@ -298,27 +358,29 @@ class SnakesQ(Snakes):
                     break
 
 
-    def log_constants(self, fh):
-        super().log_constants(fh)
+    def log_constants(self, log_action):
+        super().log_constants(log_action)
 
-        print("Wall left:%4d"  % self._wall_left,  file=fh)
-        print("Wall right:%3d" % self._wall_right, file=fh)
-        print("Wall up:%6d"    % self._wall_up,    file=fh)
-        print("Wall down:%4d"  % self._wall_down,  file=fh)
+        lr = self._learning_rate
+        if not self._single:
+            lr *= self.nr_snakes
 
-        print("Vision: <<EOT", file=fh)
-        print(self._vision_obj.string(final_newline = False), file=fh)
-        print("EOT", file=fh)
+        log_action("Wall left", "%4d",  self._wall_left)
+        log_action("Wall right", "%3d", self._wall_right)
+        log_action("Wall up", "%6d",    self._wall_up)
+        log_action("Wall down", "%4d",  self._wall_down)
 
-        print("NrStates:%5d"   % self.NR_STATES,   file=fh)
-        print("learning rate:", self._learning_rate * self.nr_snakes, file=fh)
-        print("Discount:     ", self._discount,        file=fh)
-        print("Epsilon:      ", 1/SnakesQ.EPSILON_INV, file=fh)
-        print("Reward apple: ", SnakesQ.REWARD_APPLE,  file=fh)
-        print("Reward crash: ", SnakesQ.REWARD_CRASH,  file=fh)
-        print("Reward move:  ", SnakesQ.REWARD_MOVE,   file=fh)
-        print("Reward rand:  ", SnakesQ.REWARD_RAND,   file=fh)
-        print("Reward init:  ", SnakesQ.REWARD0,       file=fh)
+        log_action("Vision", "%s", self._vision_obj.string(final_newline = False))
+
+        log_action("NrStates",      " %8d",   self.NR_STATES)
+        log_action("Learning Rate", "%8.3f",  lr)
+        log_action("Discount",      "%13.3f", self._discount)
+        log_action("Epsilon",       "%14.3f", 1/SnakesQ.EPSILON_INV)
+        log_action("Reward apple",  "%9.3f",  self._rewards.apple)
+        log_action("Reward crash",  "%9.3f",  self._rewards.crash)
+        log_action("Reward move",   "%10.3f", self._rewards.move)
+        log_action("Reward rand",   "%10.3f", self._rewards.rand)
+        log_action("Reward init",   "%10.3f", self._rewards.initial)
 
 
     def dump_fh(self, fh):
@@ -375,7 +437,7 @@ class SnakesQ(Snakes):
 
         # print(self._q_table)
 
-        is_eat = move_result.is_eat
+        h0 = self.frame_history_then()
         head = self.head()
         # self.print_pos("Head", head)
 
@@ -455,65 +517,55 @@ class SnakesQ(Snakes):
             else:
                 w_state = None
             print("Old State = %s, New State = %d (Apple = %d, Wall = %s, Neighbour = %u)" %
-                  ("None" if is_eat is None else str(self._old_state[self._debug_index]),
+                  ("None" if h0 is None else str(self._old_state[h0][self._debug_index]),
                    state[self._debug_index], a_state, str(w_state),
                    neighbour_state[self._debug_index] // (self.NR_STATES_APPLE * self.NR_STATES_WALL)))
 
-        # Evaluate the previous move
-        if is_eat is not None:
-            self._eat_frame[move_result.eaten] = self.frame()
+        # Eaten includes collided
+        self._eat_frame[move_result.eaten] = self.frame()
+        # Evaluate the historical move
+        if h0 is not None:
             q_row = self._q_table[state]
-            # rewards = self._rewards
-            # rewards.fill(SnakesQ.REWARD_MOVE)
-            rewards = np.random.uniform(-SnakesQ.REWARD_RAND/2,
-                                        +SnakesQ.REWARD_RAND/2,
-                                        size=self.nr_snakes)
-            r = np.random.uniform(-SnakesQ.REWARD_RAND,
-                                  +SnakesQ.REWARD_RAND)
             if debug:
                 print("Qrow before:", q_row[self._debug_index])
                 #print("base r:", r)
                 #print("rand r:", rewards[self._debug_index])
-            rewards += SnakesQ.REWARD_MOVE + r
-            rewards[move_result.eaten]    += SnakesQ.REWARD_APPLE
-            if self._accelerated:
-                # keep crashes at exactly REWARD_CRASH
-                rewards[move_result.collided] = SnakesQ.REWARD_CRASH
-            else:
-                # eaten at this point contains collided,
-                # so compensate by an apple
-                rewards[move_result.collided] += SnakesQ.REWARD_CRASH - SnakesQ.REWARD_APPLE
-            # Don't punish the snake for winning!
-            # (a win is marked as a crash but the snake really got an apple)
-            if move_result.won.size:
-                rewards[move_result.won] += SnakesQ.REWARD_APPLE - SnakesQ.REWARD_CRASH
-            # move_result.print()
-            # print("Rewards", rewards)
+
+            reward_moves = np.random.uniform(
+                self._rewards.move - self._rewards.rand /2,
+                self._rewards.move + self._rewards.rand /2)
+            reward_moves = np.random.uniform(
+                (reward_moves-self._rewards.rand/2) * self._history,
+                (reward_moves+self._rewards.rand/2) * self._history,
+                size=self.nr_snakes)
+            rewards = self._history_gained * self._rewards.apple
+            rewards += np.where(self._history_game0 == self._nr_games,
+                                # Bootstrap from discounted best estimate
+                                (np.amax(q_row, axis=-1)+reward_moves) * self._discount,
+                                self._rewards.crash)
             if debug:
-                print("Reward", rewards[self._debug_index])
-            advantage = np.amax(q_row, axis=-1) * self._discount
-            advantage[move_result.collided] = 0
-            advantage -= self._q_table[self._old_state, self._old_action]
-            # print("Advantage", advantage)
-            if debug:
-                print("Advantage", advantage[self._debug_index])
-            rewards += advantage
-            # print("Update", rewards)
+                print("Reward %f (Old Game = %d, New Game = %d)" %
+                      (rewards[self._debug_index],
+                       self._history_game0[self._debug_index],
+                       self._nr_games[self._debug_index]))
+            old_state  = self._old_state [h0]
+            old_action = self._old_action[h0]
+            rewards -= self._q_table[old_state, old_action]
             rewards *= self._learning_rate
             if debug:
-                print("Q old", self._q_table[self._old_state[self._debug_index]])
-                print("Update[%u][%u]" % (self._old_state[self._debug_index],
-                                          self._old_action[self._debug_index]),
+                print("Q old", self._q_table[old_state[self._debug_index]])
+                print("Update[%u][%u]" % (old_state [self._debug_index],
+                                          old_action[self._debug_index]),
                       rewards[self._debug_index])
             if self._single:
                 # Any state entry is only updated once. All other snakes trying
                 # to update it at the same time are wasted.
-                self._q_table[self._old_state, self._old_action] += rewards
+                self._q_table[old_state, old_action] += rewards
             else:
                 # Potentially need to multi-update the same state, so use ads.at
-                np.add.at(self._q_table, (self._old_state, self._old_action), rewards)
+                np.add.at(self._q_table, (old_state, old_action), rewards)
             if debug:
-                print("Q new", self._q_table[self._old_state[self._debug_index]])
+                print("Q new", self._q_table[old_state[self._debug_index]])
             #if np.isnan(self._q_table).any():
             #    raise(AssertionError("Q table contains nan"))
 
@@ -524,7 +576,7 @@ class SnakesQ(Snakes):
         action = q_row.argmax(axis=-1).astype(TYPE_ID)
         if debug:
             print("Old Action = %s, New action = %u, Moves since apple = %u" %
-                  ("None" if is_eat is None else str(self._old_action[self._debug_index]),
+                  ("None" if h0 is None else str(self._old_action[h0][self._debug_index]),
                    action[self._debug_index],
                    self.frame() - self._eat_frame[self._debug_index]))
             if self._symmetry:
@@ -545,8 +597,9 @@ class SnakesQ(Snakes):
         #                             neighbour = 0)
         #    print(self._q_table[empty_state])
         # Take the selected action and remember where we came from
-        self._old_state  = state
-        self._old_action = action
+        h = self.frame_history_now()
+        self._old_state[h]  = state
+        self._old_action[h] = action
         if self._symmetry:
             self._old_direction += (action-1) * symmetry_state[:, 2]
             self._old_direction &= 3
@@ -557,6 +610,7 @@ class SnakesQ(Snakes):
 
 
     # Detect starving snakes. They are probably looping
+    # Ever so often just give them a random direction even if that kills them
     def unloop(self, action):
         looping = self._eat_frame <= self.frame() - SnakesQ.LOOP_MAX * self.AREA
         looping = looping.nonzero()[0]
@@ -583,7 +637,7 @@ class SnakesQ(Snakes):
                          action[self._debug_index])
 
 
-    # Kick a small fraction of all snakes
+    # Kick a small fraction of all snakes to a random non-blocked direction
     def kick(self, action, symmetry_state):
         accept = np.random.randint(SnakesQ.EPSILON_INV, size=self.nr_snakes)
         randomize = (accept == 0).nonzero()[0]

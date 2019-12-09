@@ -1,6 +1,7 @@
 import time
 import math
 import sys
+import os
 
 # +
 from dataclasses import dataclass
@@ -13,7 +14,6 @@ class TextField:
     initial_value: str  = "0"
 
 # +
-
 TEXT_SCORE           = "score"
 TEXT_GAME            = "game"
 TEXT_MOVES           = "moves"
@@ -58,6 +58,18 @@ TEXTS_STATUS = [
     # TextField(TEXT_GAMES,       "Games:"),
 ]
 
+
+def log_fh(fh, name, format, value):
+    value = format % value
+    if "\n" in value:
+        # Should also check that value doesn't contain EOT...
+        print(name + ": <<EOT", file=fh)
+        print(value, file=fh)
+        print("EOT", file=fh)
+    else:
+        print(name + ":" + value, file=fh)
+
+
 class Display:
     EDGE = 1
 
@@ -78,23 +90,55 @@ class Display:
     STARTED = 0
 
     def __init__(self, snakes,
-                 rows        = 1,
-                 columns     = 2,
-                 block_size  = 20,
-                 log_file    = "snakes.log.txt",
-                 dump_file   = "snakes.dump.txt",
-                 stream_file = "snakes.stream.%dx%d.rgb",
-                 stepping    = False,
-                 caption     = "Snakes"):
+                 rows         = 1,
+                 columns      = 2,
+                 block_size   = 20,
+                 log_period   = 1,
+                 log_period_frames = False,
+                 log_file     = "snakes.log.txt",
+                 dump_file    = "snakes.dump.txt",
+                 tensor_board = None,
+                 stream_file  = "snakes.stream.%dx%d.rgb",
+                 stepping     = False,
+                 caption      = "Snakes"):
         self.rows    = rows
         self.columns = columns
         self.windows = rows*columns
         self._stepping = stepping
 
+        self._log_period = log_period
+        self._log_period_frames = log_period_frames
         self._log_file  = log_file
         self._log_fh = None
         self._dump_file = dump_file
         self._stream_file = stream_file
+
+        if tensor_board:
+            # The only reason I don't simply have this import at the top is that
+            # tensorflow is *huge* and takes a long time to load and be default
+            # it is not needed
+            global tf
+            import tensorflow as tf
+            gpus = tf.config.experimental.list_physical_devices('GPU')
+            if gpus:
+                try:
+                    # Currently, memory growth needs to be the same across GPUs
+                    for gpu in gpus:
+                        tf.config.experimental.set_memory_growth(gpu, True)
+                except RuntimeError as e:
+                    # Memory growth must be set before GPUs have been initialized
+                    print(e)
+
+            # Strictly speaking gmtime would be less ambiguous, but humans seem
+            # to prefer local time for some reason. Go figure.
+            when = time.strftime("%Y%m%d_%H%M%S")
+            tb_dir = "%s/%dx%d/%s_%d" % (
+                tensor_board, snakes.WIDTH, snakes.HEIGHT, when, os.getpid())
+            self._tb_writer = tf.summary.create_file_writer(tb_dir)
+            self._tb_writer.set_as_default()
+            self._log_tb_previous = None
+        else:
+            self._tb_writer = None
 
         if not self.windows:
             return
@@ -121,6 +165,7 @@ class Display:
     def log_open(self):
         if self._log_file is not None and self._log_file != "":
             self._log_fh = open(self._log_file, "w")
+            self._log_previous = None
 
 
     def log_close(self):
@@ -134,19 +179,21 @@ class Display:
             return
 
         fh = self._log_fh
-        print(time.strftime("time_start: %Y-%m-%d %H:%M:%S %z",
-                            time.localtime(self._time_start)),
-              file=fh)
-        print("time_start_epoch: %.3f" % self._time_start, file=fh)
-        print("time_start_monotonic:", self._time_monotonic_start,
-              file=fh)
-        print("time_start_process:",  self._time_process_start,
-              file=fh)
+
+        def log_action(name, format, value):
+            log_fh(fh, name, format, value)
+
+        log_action("time_start", "%s",
+                   time.strftime("%Y-%m-%d %H:%M:%S %z",
+                                 time.localtime(self._time_start)))
+        log_action("time_start_epoch",     "%.3f", self._time_start)
+        log_action("time_start_monotonic", "%.3f", self._time_monotonic_start)
+        log_action("time_start_process",   "%.3f", self._time_process_start)
 
         snakes = self.snakes()
-        snakes.log_constants(fh)
+        snakes.log_constants(log_action)
 
-        print("Frame:", snakes.frame(), file=fh)
+        log_action("Frame", "%d", snakes.frame())
 
 
     def log_stop(self):
@@ -169,39 +216,129 @@ class Display:
 
         fh = self._log_fh
         print("#----", file=fh)
-        self._log_frame(fh)
+
+        def log_action(name, format, value):
+            log_fh(fh, name, format, value)
+        self._log_previous = self._log_frame(log_action, self._log_previous)
 
 
     def dump(self):
         with open(self._dump_file, "w") as fh:
+            self._dump_previous = None
             self.timestamp()
             self.dump_fh(fh)
 
 
     def dump_fh(self, fh):
         snakes = self.snakes()
-        snakes.log_constants(fh)
-        self._log_frame(fh)
+
+        def log_action(name, format, value):
+            log_fh(fh, name, format, value)
+
+        snakes.log_constants(log_action)
+        self._dump_previous = self._log_frame(log_action, self._dump_previous)
         snakes.dump_fh(fh)
 
 
-    def _log_frame(self, fh):
+    def log_tensor_board_start(self):
+        if not self._tb_writer:
+            return
+
+        frame = self.snakes().frame()
+        def log_action(name, format, value):
+            if format == " %s" or format == "%s":
+                tf.summary.text(name,
+                                "    " + value.replace("\n", "\n    "),
+                                step=frame)
+            else:
+                tf.summary.scalar("Constants/%s" % name,
+                                  value,
+                                  step=frame)
+
+        log_action("time_start", " %s",
+                   time.strftime("%Y-%m-%d %H:%M:%S %z",
+                                 time.localtime(self._time_start)))
+        log_action("time_start_epoch",     "%.3f", self._time_start)
+        log_action("time_start_monotonic", "%.3f", self._time_monotonic_start)
+        log_action("time_start_process",   "%.3f", self._time_process_start)
+
+        snakes = self.snakes()
+        snakes.log_constants(log_action)
+
+
+    def log_tensor_board(self):
+        if not self._tb_writer:
+            return
+
+        frame = self.snakes().frame()
+        def log_action(name, format, value):
+            tf.summary.scalar(name, value, step=frame)
+        self._log_tb_previous = self._log_frame(log_action, self._log_tb_previous)
+
+
+    def _log_frame(self, log_action, previous):
         snakes = self.snakes()
 
-        print("Frame:%12d"         % snakes.frame(), file=fh)
-        print("Elapsed:%14.3f"     % self.elapsed(), file=fh)
-        print("Paused:%15.3f"      % self.paused(),  file=fh)
-        print("Used:%17.3f"        % self.elapsed_process(), file=fh)
-        print("Frames skipped:%3d" % self.frames_skipped(), file=fh)
-        print("Frame rate:%11.3f"  % self.frame_rate(snakes), file=fh)
-        print("Games Total:%6d"    % snakes.nr_games_total(), file=fh)
-        print("Games Won:%8d"      % snakes.nr_games_won_total(), file=fh)
-        print("Score Max:%8d"      % snakes.score_max(), file=fh)
-        print("Score Total:%6d"    % snakes.score_total_games(), file=fh)
-        print("Moves Max:%8d"      % snakes.nr_moves_max(), file=fh)
-        print("Moves total:%6d"    % snakes.nr_moves_total_games(), file=fh)
-        print("Moves/Game:%11.3f"  % snakes.nr_moves_per_game(), file=fh)
-        print("Moves/Apple:%10.3f" % snakes.nr_moves_per_apple(), file=fh)
+        current = {
+            "elapsed": self.elapsed() - self.paused(),
+            "used": self.elapsed_process(),
+            "frame": snakes.frame(),
+            "score_total":    snakes.score_total_games(),
+            "nr_games_won":   snakes.nr_games_won_total(),
+            "nr_games_total": snakes.nr_games_total(),
+            "nr_moves_total": snakes.nr_moves_total_games()
+        }
+
+        log_action("Frame",   "%12d"       , snakes.frame())
+        log_action("Elapsed", "%14.3f"     , self.elapsed())
+        log_action("Paused",  "%15.3f"     , self.paused())
+        log_action("Used",    "%17.3f"     , self.elapsed_process())
+        log_action("Frame rate",  "%11.3f" , self.frame_rate(snakes))
+        log_action("Games Total", "%6d"    , current["nr_games_total"])
+        log_action("Games Won",   "%8d"    , snakes.nr_games_won_total())
+        log_action("Score Max",   "%8d"    , snakes.score_max())
+        log_action("L Score Max", "%6d"    , snakes.score_max_local())
+        log_action("Score Total", "%6d"    , current["score_total"])
+        log_action("Moves Max",   "%8d"    , snakes.nr_moves_max())
+        log_action("Moves total", "%6d"    , current["nr_moves_total"])
+        log_action("Moves/Game", "%11.3f"  , snakes.nr_moves_per_game())
+        log_action("Moves/Apple", "%10.3f" , snakes.nr_moves_per_apple())
+        log_action("Score/Game", "%11.3f"  , snakes.score_per_game())
+
+        if previous:
+            delta = { k: v - previous[k] for k, v in current.items() }
+
+            if delta["elapsed"]:
+                log_action("L Frame rate",  "%9.3f" ,
+                           delta["frame"] / delta["elapsed"])
+
+            if delta["used"]:
+                log_action("L Frame/Used",  "%9.3f" ,
+                           delta["frame"] / delta["used"])
+
+            if delta["nr_games_total"]:
+                log_action("L Score/Game", "%9.3f" ,
+                            delta["score_total"] / delta["nr_games_total"])
+                log_action("L Moves/Game", "%9.3f" ,
+                            delta["nr_moves_total"] / delta["nr_games_total"])
+
+            if delta["score_total"]:
+                log_action("L Moves/Apple", "%8.3f" ,
+                           delta["nr_moves_total"] / delta["score_total"])
+
+            if delta["frame"]:
+                log_action("L Games/Frame", "%8.3f",
+                           delta["nr_games_total"] / delta["frame"])
+                log_action("L Won/Frame", "%10.3f",
+                           delta["nr_games_won"] / delta["frame"])
+                log_action("L Score/Frame", "%8.3f",
+                           delta["score_total"] / delta["frame"])
+
+            if delta["nr_games_total"]:
+                log_action("L Won/Game", "%11.3f",
+                           delta["nr_games_won"] / delta["nr_games_total"])
+
+        return current
 
 
     def start(self):
@@ -209,14 +346,14 @@ class Display:
         self._streaming = False
 
         if not self.windows:
-            return
+            return []
 
         self._background = None
 
         self._stream_fh = None
         self._stream_warned = False
 
-        rect = self.start_graphics()
+        rects = self.start_graphics()
 
         for text_field in TEXTS_STATUS:
             self.text_register(text_field),
@@ -224,7 +361,7 @@ class Display:
         for text_field in TEXTS_STATUS_PIT:
             self.text_pit_register(text_field)
 
-        return rect
+        return rects
 
 
     def stop(self):
@@ -409,7 +546,7 @@ class Display:
         # print("Start at time 0, frame", snakes.frame())
 
         self._paused = 0
-        self._elapsed_sec_log  = 0
+        self._elapsed_last  = -self._log_period
 
         self._time_start = time.time()
         self._time_process_start = time.process_time()
@@ -418,10 +555,8 @@ class Display:
         self._time_process_end   = self._time_process_start
         self._time_monotonic_end = self._time_monotonic_start
         self._time_target        = self._time_monotonic_start
-        self._frames_skipped = 0
         if self._stepping:
             self._pause_time = self._time_monotonic_start
-            self._pause_frame = self.snakes().frame()
             self._stepping = False
             # When stepping the first frame doesn't count
         else:
@@ -439,8 +574,6 @@ class Display:
             self._paused += self._time_monotonic_end - self._pause_time
             self._pause_time = self._time_monotonic_end
             frame = self.snakes().frame()
-            self._frames_skipped += frame - self._pause_frame
-            self._pause_frame = frame
         return now_monotonic - self._time_monotonic_start
 
 
@@ -460,23 +593,20 @@ class Display:
         return self._paused
 
 
-    # How many frames we manually single-stepped
-    def frames_skipped(self):
-        return self._frames_skipped
-
-
     def frame_rate(self, snakes):
         elapsed = self.elapsed() - self.paused()
-        frames  = snakes.frame() - self.frames_skipped()
+        frames  = snakes.frame()
         if elapsed == 0:
             # This properly handles positive, negative and 0 (+inf, -inf, nan)
             return math.inf * int(frames)
         return frames / elapsed
 
 
-    def run(self, snakes, fps = 40, stepping = False, frame_max = -1):
+    def run(self, snakes, fps = 40, stepping = False,
+            frame_max = -1, game_max = -1):
         self._stepping = stepping
         self._frame_max = frame_max
+        self._game_max = game_max if game_max >= 0 else math.inf
         self._snakes = snakes
         if fps > 0:
             self._poll_fast = 1 / fps
@@ -500,12 +630,15 @@ class Display:
         self._quit = False
         self.set_timer_step(0, self.run1)
 
+
     # Continuation of run(), but called from loop()
     def run1(self):
         self.timers_start()
         self.log_start()
+        self.log_tensor_board_start()
         # Loop in step() until event_quit sets it to run2()
         self.set_timer_step(0, self.step)
+
 
     # Continuation of run1(), called from loop()
     def run2(self):
@@ -544,14 +677,20 @@ class Display:
 
         elif now_monotonic >= self._time_target - Display.WAIT_MIN or self._stepping:
             snakes = self.snakes()
-            if snakes.frame() == self._frame_max:
+            if (snakes.frame() == self._frame_max or
+                snakes.nr_games_total() >= self._game_max):
                 self.set_timer_step(0, self.run2, now_monotonic)
                 return now_monotonic
 
-            elapsed_sec = int(self.timestamp(now_monotonic))
-            if elapsed_sec != self._elapsed_sec_log:
-                self._elapsed_sec_log = elapsed_sec
+            # Always do the timestamp
+            elapsed = self.timestamp(now_monotonic)
+            if self._log_period_frames:
+                elapsed = snakes.frame()
+            if elapsed - self._elapsed_last >= self._log_period:
+                self._elapsed_last = elapsed
                 self.log_frame()
+                self.log_tensor_board()
+                snakes.score_max_local_clear()
 
             self.move()
             self.draw_result()
@@ -627,13 +766,11 @@ class Display:
         if self._pause_time:
             self._time_target = now_monotonic
             self._paused += now_monotonic - self._pause_time
-            self._frames_skipped += snakes.frame() - self._pause_frame
             # print("Start running at", now_monotonic - self._time_monotonic_start, "frame", self.frame())
             self._pause_time = 0
         else:
             # print("Stop running at", time-self._time_monotonic_start, "frame", snakes.frame())
             self._pause_time = now_monotonic
-            self._pause_frame = snakes.frame()
 
 
     def event_single_step(self, now_monotonic = None):
@@ -643,7 +780,6 @@ class Display:
         self._stepping = True
         if not self._pause_time:
             self._pause_time = now_monotonic
-            self._pause_frame = self.snakes().frame()
 
 
     def event_speed_higher(self, now_monotonic = None):

@@ -410,15 +410,21 @@ class DisplayQt5(Display):
 
     def start_graphics(self):
         screen = Screen(self)
-        self._stepper = QTimer()
         self._screen = screen
         # self._stepper.timeout.connect(self.step)
+        return None
+
+
+    def start(self):
+        super().start()
+        self._stepper = QTimer()
 
 
     def stop(self):
-        self._screen.stop()
+        if self.windows:
+            self._screen.stop()
+            del self._screen
         del self._stepper
-        del self._screen
 
         # super().stop()
 

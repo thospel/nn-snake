@@ -19,19 +19,31 @@
 
 Usage:
   snake.py greedy [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
-           [--width=<width>] [--height=<height>] [--frames=<frames>]
-           [--columns=columns] [--rows=rows] [--block=<block_size>]
-           [--wall=<wall>] [--pygame] [--dump-file=<file>] [--log-file=<log>]
-  snake.py q-table [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
-           [--width=<width>] [--height=<height>] [--frames=<frames>]
-           [--columns=columns] [--rows=rows] [--block=<block_size>]
-           [--wall=<wall>] [--symmetry] [--single] [--pygame]
-           [--vision-file=<file>] [--dump-file=<file>] [--log-file=<log>]
-           [--learning-rate=<r>] [--discount <ratio>] [--accelerated]
+           [--width=<width>] [--height=<height>]
+           [--frames=<frames>] [--games=<games>] [--dump=<file>]
+           [--columns=columns] [--rows=rows] [--block=<block_size>] [--pygame]
+           [--log-period=<period>] [--log=<log>] [--tensor-board=<dir>]
   snake.py cycle [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
-           [--width=<width>] [--height=<height>] [--frames=<frames>]
-           [--columns=columns] [--rows=rows] [--block=<block_size>]
-           [--pygame] [--show-cycle] [--dump-file=<file>] [--log-file=<log>]
+           [--width=<width>] [--height=<height>]
+           [--frames=<frames>] [--games=<games>] [--dump=<file>]
+           [--columns=columns] [--rows=rows] [--block=<block_size>] [--pygame]
+           [--log-period=<period>] [--log=<log>] [--tensor-board=<dir>]
+           [--risk=<risk_max>] [--show-cycle]
+  snake.py q-table [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
+           [--width=<width>] [--height=<height>]
+           [--frames=<frames>] [--games=<games>] [--dump=<file>]
+           [--columns=columns] [--rows=rows] [--block=<block_size>] [--pygame]
+           [--log-period=<period>] [--log=<log>] [--tensor-board=<dir>]
+           [--wall=<wall>] [--symmetry] [--single]
+           [--vision-file=<file>] [--reward-file=<file>]
+           [--learning-rate=<r>] [--discount <ratio>] [--accelerated]
+           [--history=<history>] [--history-pit]
+  snake.py a2c [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
+           [--width=<width>] [--height=<height>]
+           [--frames=<frames>] [--games=<games>] [--dump=<file>]
+           [--columns=columns] [--rows=rows] [--block=<block_size>] [--pygame]
+           [--log-period=<period>] [--log=<log>] [--tensor-board=<dir>]
+           [--history=<history>]
   snake.py benchmark
   snake.py -f <file>
   snake.py (-h | --help)
@@ -50,17 +62,24 @@ Options:
   --columns=<columns>     Columns of pits to display [default: 2]
   --rows=<rows>           Rows of pits to display [default: 1]
   --frames=<frames>       Stop automatically at this frames number [Default: -1]
+  --games=<games>         Stop automatically once this game number is reached.
+                          The actual number of games may be higher since extra
+                          games can end during the final frame [Default: -1]
   --wall=<wall>           Have state for distance from wall up to <wall>
                           [Default: 2]
   --symmetry              Apply dihedral symmetry
   --vision-file=<file>    Read snake vision from file
+  --reward-file=<file>    Read rewards from file
   --show-cycle            Show the Hamiltonian cycle on the background
+  --risk=<risk_max>       Maximum risk to take when taking shortcuts in
+                          Hamiltonian cycles [Default: 0.1]
   --pygame		  Use pygame for output (default is qt5)
-  --log-file=<file>       Write to logfile. Use an empty string if you
-                          explicitely don't want any logging
-                          [Default: snakes.log.txt]
-  --dump-file=<file>      Which file to dump to on keypress
+  --log-period=<period>   How often to write a log entry. Can be given in
+                          seconds (s) or frames (f) [Default: 1s]
+  --log=<file>            Write to logfile <file>
+  --dump=<file>           Which file to dump to on keypress
                           [Default: snakes.dump.txt]
+  --tensor-board=<dir>    Write tensorbaord data to dir
   --single                Any one state can be updated at most once per frame
                           Use this if all snakes tend to be in different states
                           since it allows you to use an undivided learning rate
@@ -72,8 +91,15 @@ Options:
   --discount <ratio>      state to state Discount [Default: 0.99]
   --debug                 Run debug code
   --accelerated           Prefill the Q table with walls
-                          It will learn this by itself but takes a long time if
-                          there are very many states
+                          It will learn this by itself but may take a long time
+                          if there are very many states
+  --history=<history>     Repeat everything <history> moves delayed. This
+                          allows learning to evaluate a given old position by
+                          how it will do by effectively looking <history> steps
+                          into the future [Default: 1]
+  --history-pit           Also restore the whole pit layout for history. This
+                          is not needed in the given mode but allows for easier
+                          debugging (the historic layout is shown during debug)
   -f <file>:              Used by jupyter, ignored
 
 Key actions:
@@ -93,8 +119,6 @@ Key actions:
                Make gif:
                  ffmpeg -y -f rawvideo -s 880x440 -pix_fmt rgb24 -r 10 -i snakes.stream.880x440.rgb -an -vf palettegen palette.png
                  ffmpeg -y -f rawvideo -s 880x440 -pix_fmt rgb24 -r 10 -i snakes.stream.880x440.rgb -i palette.png -an -lavfi paletteuse snakes.gif
-
-
 """
 from docopt import docopt
 
@@ -127,11 +151,30 @@ else:
 columns    = int(arguments["--columns"])
 rows       = int(arguments["--rows"])
 nr_snakes  = int(arguments["--snakes"]) or rows*columns
+log_period = arguments["--log-period"]
+log_period_frames = False
+if log_period.endswith("s"):
+    log_period = log_period[:-1]
+elif log_period.endswith("f"):
+    log_period = log_period[:-1]
+    log_period_frames = True
+if log_period_frames:
+    log_period = int(log_period)
+else:
+    log_period = float(log_period)
+if log_period <= 0:
+    raise(ValueError("--log-period must be positive"))
+
 snake_kwargs = dict()
 if arguments["greedy"] or arguments["benchmark"]:
     from snakes import Snakes
 
     snake_class = Snakes
+elif arguments["cycle"] or arguments["-f"]:
+    from snakes.hamiltonian import SnakesH
+    snake_class = SnakesH
+    snake_kwargs["show_cycle"]    = arguments["--show-cycle"]
+    snake_kwargs["risk_max"]      = float(arguments["--risk"])
 elif arguments["q-table"]:
     from snakes import VisionFile
     from snakes.qtable import SnakesQ
@@ -139,20 +182,23 @@ elif arguments["q-table"]:
     snake_class = SnakesQ
     if arguments["--vision-file"] is not None:
         snake_kwargs["vision"] = VisionFile(arguments["--vision-file"])
+    snake_kwargs["reward_file"] = arguments["--reward-file"]
     wall = int(arguments["--wall"])
-    snake_kwargs["wall_left"]  = wall
-    snake_kwargs["wall_right"] = wall
-    snake_kwargs["wall_up"]    = wall
-    snake_kwargs["wall_down"]  = wall
+    snake_kwargs["wall_left"]     = wall
+    snake_kwargs["wall_right"]    = wall
+    snake_kwargs["wall_up"]       = wall
+    snake_kwargs["wall_down"]     = wall
     snake_kwargs["single"]        = arguments["--single"]
     snake_kwargs["learning_rate"] = float(arguments["--learning-rate"])
     snake_kwargs["discount"]      = float(arguments["--discount"])
     snake_kwargs["accelerated"]   = arguments["--accelerated"]
     snake_kwargs["symmetry"]      = arguments["--symmetry"]
-elif arguments["cycle"]:
-    from snakes.hamiltonian import SnakesH
-    snake_class = SnakesH
-    snake_kwargs["show_cycle"]    = arguments["--show-cycle"]
+    snake_kwargs["history"]       = int(arguments["--history"])
+    snake_kwargs["history_pit"]   = arguments["--history-pit"]
+elif arguments["a2c"]:
+    from snakes.actor_critic import SnakesA2C
+    snake_kwargs["history"]       = int(arguments["--history"])
+    snake_kwargs["history_pit"]   = True
 else:
     raise(AssertionError("Unspecified snake type"))
 
@@ -181,14 +227,18 @@ if arguments["benchmark"]:
 # +
 display = Display(
     snakes,
-    columns    = columns,
-    rows       = rows,
-    block_size = int(arguments["--block"]),
-    log_file   = arguments["--log-file"],
-    dump_file  = arguments["--dump-file"]
+    columns      = columns,
+    rows         = rows,
+    block_size   = int(arguments["--block"]),
+    log_period   = log_period,
+    log_period_frames = log_period_frames,
+    log_file     = arguments["--log"],
+    dump_file    = arguments["--dump"],
+    tensor_board = arguments["--tensor-board"]
 )
 display.run(snakes,
             frame_max  = int(arguments["--frames"]),
+            game_max   = int(arguments["--games"]),
             fps        = float(arguments["--fps"]),
             stepping   = arguments["--stepping"]
 )

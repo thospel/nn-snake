@@ -339,8 +339,10 @@ class SnakesH(Snakes):
     def __init__(self, *args,
                  xy_head=False,
                  show_cycle = False,
+                 risk_max = RISK_MAX,
                  **kwargs):
         self._show_cycle = show_cycle
+        self._risk_max = risk_max
 
         super().__init__(*args, xy_head=False, **kwargs)
 
@@ -388,7 +390,7 @@ class SnakesH(Snakes):
             # We will take this risk left-1 times
             risks = 1 - (1 - risks) ** (left-1)
             # print(risks)
-            risks = risks <= RISK_MAX
+            risks = risks <= self._risk_max
             # print(risks)
             if risks[-1]:
                 safe = np.argmax(risks)
@@ -407,20 +409,16 @@ class SnakesH(Snakes):
         self._safe_last1  = safe_last  + 1
 
 
-    def log_constants(self, fh):
-        super().log_constants(fh)
+    def log_constants(self, log_action):
+        super().log_constants(log_action)
 
-        print("Sequence: <<EOT", file=fh)
         with np.printoptions(threshold=self._sequence.size, linewidth = 10 * self._sequence0[0].size):
-            print(self._sequence0, file=fh)
-        print("EOT", file=fh)
+            log_action("Sequence", "%s", str(self._sequence0))
 
-        print("RiskMax:%10.3f" %  RISK_MAX, file=fh)
-        print("Safe: <<EOT", file=fh)
+        log_action("RiskMax", "%10.3f", self._risk_max)
         safe = np.stack((self._safe_first1, self._safe_last1), axis=1)
         with np.printoptions(threshold=safe.size):
-            print(safe, file=fh)
-        print("EOT", file=fh)
+            log_action("Safe", "%s", str(safe))
 
 
     def run_start(self, display):
@@ -455,7 +453,7 @@ class SnakesH(Snakes):
         neighbours_pos = np.add.outer(self.DIRECTIONS, head)
         walls = self._field[self._all_snakes, neighbours_pos]
         neighbours_seq = self._sequence[neighbours_pos]
-        neighbours_pos = None
+        del neighbours_pos
         # Suppose e.g. the tail is at seq 4. We are using this for planning.
         # Assume we will move the head to seq 0. This will move the tail to
         # seq 5, so the gap is 4
@@ -471,7 +469,7 @@ class SnakesH(Snakes):
         head_steps = (head_seq - neighbours_seq) % self.AREA
         # head_seq = None
         head_before_tail = head_steps < gap
-        head_steps = None
+        del head_steps
 
         # We plan to eat the current apple, after which the gap will be 3
         # So we can safely eat 2 more apples
@@ -487,12 +485,11 @@ class SnakesH(Snakes):
                 str(gap[:, self._debug_index]),
                 self._safe_last1[left[self._debug_index]]))
             print("Unacceptable risk:", unacceptable[:, self._debug_index])
-        gap = None
+        del gap
 
         unacceptable |= head_before_tail
         if debug:
             print("Unaccptable head before tail:", unacceptable[:, self._debug_index])
-        head_steps = None
 
         # Just following the sequence is always acceptable
         # Since the code above calculated that following the whole sequence is
@@ -514,17 +511,17 @@ class SnakesH(Snakes):
         apple_seq = self._sequence[self.apple()]
         # print("Apple seq", apple_seq)
         apple_steps = (apple_seq - neighbours_seq) % self.AREA
-        neighbours_seq = None
+        del neighbours_seq
         if False:
-            head_seq = None
-            apple_seq = None
+            del head_seq
+            del apple_seq
             tmp = ma.array(apple_steps, mask = unacceptable)
             assert tmp.data.base is apple_steps
             apple_steps = tmp
             if debug:
                 print("Masked apple steps", apple_steps[self._debug_index])
             fastest = apple_steps.argmin(axis=0)
-            apple_steps = None
+            del apple_steps
         else:
             # Make sure the snakes moves towards the apple on the sequence
             # This is needed to avoid getting stuck in loops
@@ -533,10 +530,10 @@ class SnakesH(Snakes):
             if debug:
                 print("Apple steps", apple_steps[:, self._debug_index], "Head", apple_steps0[self._debug_index])
                 print("Unacceptable toward apple:", unacceptable[:, self._debug_index])
-            apple_steps0 = None
-            apple_steps = None
-            head_seq = None
-            apple_seq = None
+            del apple_steps0
+            del apple_steps
+            del head_seq
+            del apple_seq
             # Determine the direction of the apple
             distance = self.apple_distance()[0]
             tmp = ma.array(distance, mask = unacceptable)
@@ -545,7 +542,7 @@ class SnakesH(Snakes):
             if debug:
                 print("Distance:", distance[:, self._debug_index])
             fastest = distance.argmax(axis=0)
-            distance = None
+            del distance
 
         if debug:
             print("Fastest:", fastest[self._debug_index])

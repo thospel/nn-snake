@@ -4,6 +4,10 @@ cell_*.py
 cell_*.txt
 *.~*~
 logs/
+tb/
+fb/
+tensorboard/
+tensor-board/
 bl?b*
 notes
 git_export.*

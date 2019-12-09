@@ -22,6 +22,7 @@ TYPE_FLAG  = np.bool
 TYPE_SCORE = np.uint32
 TYPE_MOVES = np.uint32
 TYPE_GAMES = np.uint32
+TYPE_SNAKE = np.uint32
 
 
 def script():
@@ -264,10 +265,17 @@ class MoveResult:
     is_eat:       np.ndarray = None
     eaten:        np.ndarray = None
 
+
     def print(self):
         print("win: ", None if self.is_win       is None else self.is_win+0)
         print("col: ", None if self.is_collision is None else self.is_collision+0)
         print("eat: ", None if self.is_eat       is None else self.is_eat+0)
+
+
+@dataclass
+class HistoryResult:
+    collided:     np.ndarray = None
+    eaten:        np.ndarray = None
 
 
 class Snakes:
@@ -483,6 +491,8 @@ class Snakes:
     def __init__(self, nr_snakes=1,
                  width     = 40,
                  height    = 40,
+                 history   = 0,
+                 history_pit = False,
                  view_x = None, view_y = None,
                  debug = False, xy_apple = True, xy_head = True):
         if nr_snakes <= 0:
@@ -501,6 +511,21 @@ class Snakes:
         self._nr_snakes = nr_snakes
         self._all_snakes = np.arange(nr_snakes, dtype=TYPE_INDEX)
 
+        if history:
+            if history < 0:
+                raise(ValueError("History cannot be negative"))
+            # We need an extra history entry because when we look up the final
+            # score of a game we want to possibly look up the current game but
+            # also possibly the game <history> ago. These must therefore be
+            # different. This also needs us to store the current game properties
+            # before processing history. So we need 1 extra history slot
+            self.HISTORY = history + 1
+            self._history_pit = history_pit
+        else:
+            self.HISTORY = 0
+            self._history_pit = False
+        self._history = history
+
         if view_x is None:
             view_x = Snakes.VIEW_X0
         if view_y is None:
@@ -511,7 +536,6 @@ class Snakes:
             raise(ValueError("view_y must be positive to provide an edge"))
         self.VIEW_X = view_x
         self.VIEW_Y = view_y
-
         self.WIDTH  = width
         self.HEIGHT = height
         self.AREA   = self.WIDTH * self.HEIGHT
@@ -519,8 +543,9 @@ class Snakes:
             # Making area 1 work is too much bother since you immediately win
             # So you never get to move which is awkward for this implementation
             raise(ValueError("No space to put both a snake and an apple"))
-        # First power of 2 greater or equal to AREA for fast modular arithmetic
-        self.AREA2 = 1 << (self.AREA-1).bit_length()
+        # First power of 2 greater or equal to AREA+history for fast modular
+        # arithmetic
+        self.AREA2 = 1 << (self.AREA + history - 1).bit_length()
         self.MASK  = self.AREA2 - 1
 
         self.HEIGHT1 = self.HEIGHT+2*self.VIEW_Y
@@ -566,7 +591,7 @@ class Snakes:
         self._body_length = np_empty(nr_snakes, TYPE_INDEX)
         # Don't need to pre-allocate _head.
         # run_start will implicitely create it
-        self._apple    = np_empty(nr_snakes, TYPE_POS)
+        self._apple = np_empty(nr_snakes, TYPE_POS)
         if self._xy_apple:
             self._apple_x  = np_empty(nr_snakes, TYPE_POS)
             self._apple_y  = np_empty(nr_snakes, TYPE_POS)
@@ -574,17 +599,36 @@ class Snakes:
         self._nr_games_won = np_empty(nr_snakes, TYPE_GAMES)
         self._nr_games = np_empty(nr_snakes, TYPE_GAMES)
 
+        if history:
+            # 0: apple
+            # 1: score
+            # 2: game % HISTORY
+            # 3: final score
+            history_shape = (self.HISTORY, nr_snakes)
+            self._history_score       = np_empty(nr_snakes, dtype=TYPE_UPOS)
+            self._history_game0       = np_empty(nr_snakes, dtype=TYPE_GAMES)
+            self._history_score_final = np_empty(history_shape, dtype=TYPE_UPOS)
 
-    def log_constants(self, fh):
-        print("Script:", script(), file=fh)
-        print("Script Hash:", file_object_hash(), file=fh)
-        print("Type:", type(self).__name__, file=fh)
-        print("Hostname:", platform.node(),   file=fh)
-        print("Width:%8d" % self.WIDTH,   file=fh)
-        print("Height:%7d" % self.HEIGHT,  file=fh)
-        print("Snakes:%7d"  % self.nr_snakes, file=fh)
-        print("View X:%7d" % self.VIEW_X,  file=fh)
-        print("View_Y:%7d" % self.VIEW_Y,  file=fh)
+            if history_pit:
+                self._history_apple0 = np_empty(nr_snakes, dtype=TYPE_UPOS)
+                self._history_field1 = self._field1.copy()
+                self._history_field0 = self._history_field1[:, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH]
+                assert self._history_field0.base is self._history_field1
+                self._history_field = self._history_field1.reshape(nr_snakes, self.HEIGHT1*self.WIDTH1)
+                assert self._field.base is self._field1
+
+
+    def log_constants(self, log_action):
+        log_action("Script",      " %s", script())
+        log_action("Script Hash", " %s", file_object_hash())
+        log_action("Type",        " %s", type(self).__name__)
+        log_action("Hostname",    " %s", platform.node())
+        log_action("Width",       "%8d", self.WIDTH)
+        log_action("Height",      "%7d", self.HEIGHT)
+        log_action("Snakes",      "%7d", self.nr_snakes)
+        log_action("View X",      "%7d", self.VIEW_X)
+        log_action("View_Y",      "%7d", self.VIEW_Y)
+        log_action("History",     "%5d", self._history)
 
 
     def dump_fh(self, fh):
@@ -624,6 +668,14 @@ class Snakes:
 
     def score_max(self):
         return self._score_max
+
+
+    def score_max_local(self):
+        return self._score_max_local
+
+
+    def score_max_local_clear(self):
+        self._score_max_local = 0
 
 
     def score_total_snakes(self):
@@ -746,34 +798,60 @@ class Snakes:
 
 
     def snake_string(self, shape):
-        apple_y, apple_x = self.yx0(self._apple[shape])
-        head_y, head_x = self.yx0(self.head()[shape])
+        apple_y, apple_x = self.yx0(self.apple()[shape])
+        head_y,  head_x  = self.yx0(self.head ()[shape])
+        if self._history_pit:
+            if self._history_head0 is not None:
+                h_apple_y, h_apple_x = self.yx0(self._history_apple0[shape])
+                h_head_y,  h_head_x  = self.yx0(self._history_head0 [shape])
+            per_column = 2
+        else:
+            per_column = 1
+
         rows, columns = shape.shape
         horizontal = "+" + "-" * (2*self.WIDTH-1) + "+"
-        horizontal = horizontal + (" " + horizontal) * (columns-1) + "\n"
+        horizontal = horizontal + (" " + horizontal) * (columns * per_column-1) + "\n"
         str = ""
         for r in range(rows):
             str += horizontal
             for y in range(self.HEIGHT):
                 for c in range(columns):
-                    if c != 0:
-                        str += " "
-                    i = shape[r,c]
-                    field = self._field0[i]
-                    str = str + "|"
-                    for x in range(self.WIDTH):
-                        if x != 0:
+                    for h in range(per_column):
+                        if c != 0 or h != 0:
                             str += " "
-                        if field[y][x]:
-                            if y == head_y[r,c] and x == head_x[r,c]:
-                                str += "O"
-                            else:
-                                str += "#"
-                        elif y == apple_y[r,c] and x == apple_x[r,c]:
-                            str += "@"
+                        str = str + "|"
+
+                        i = shape[r,c]
+                        if h == 0:
+                            field = self._field0[i]
+                            h_x = head_x
+                            h_y = head_y
+                            a_x = apple_x
+                            a_y = apple_y
+                        elif self._history_head0 is not None:
+                            field = self._history_field0[i]
+                            h_x = h_head_x
+                            h_y = h_head_y
+                            a_x = h_apple_x
+                            a_y = h_apple_y
                         else:
-                            str += " "
-                    str = str + "|"
+                            str += "." * (2*self.WIDTH-1)
+                            str = str + "|"
+                            continue
+
+                        for x in range(self.WIDTH):
+                            if x != 0:
+                                str += " "
+                            if field[y][x]:
+                                if y == h_y[r,c] and x == h_x[r,c]:
+                                    str += "O"
+                                else:
+                                    str += "#"
+                            elif y == a_y[r,c] and x == a_x[r,c]:
+                                str += "@"
+                            else:
+                                str += " "
+                        str = str + "|"
                 str += "\n"
             str += horizontal
         return str
@@ -839,7 +917,7 @@ class Snakes:
     #      -x # x
     #        -y
     # and then select the largest value you will in fact move towards the apple
-    # This function sets up such an array for each head
+    # This function sets up such an array for each snake
     def apple_distance(self):
         if self._xy_head:
             head = None
@@ -984,14 +1062,79 @@ class Snakes:
         return self._cur_move
 
 
+    def frame_then(self):
+        return self.frame() - self._history
+
+
+    def frame_history_now(self):
+        return self.frame() % self.HISTORY
+
+
+    def frame_history_then(self):
+        frame0 = self.frame_then()
+        if frame0 < 0:
+            return None
+        return frame0 % self.HISTORY
+
+
+    def move_remember(self, move_result):
+        frame = self.frame()
+        h = self.frame_history_now()
+
+        collided = move_result.collided
+        eaten    = move_result.eaten
+        self._history_game[h]  = self.nr_games(collided)
+        self._history_result[h] = HistoryResult(
+            collided = collided,
+            eaten    = eaten)
+        if self._history_pit:
+            self._history_apple[h] = self.apple()[eaten]
+        if eaten.size:
+            # print("Set [", self._history_game[h, eaten], ",", eaten, "] = ", self.score(eaten))
+            self._history_score_final[self.nr_games(eaten)  % self.HISTORY, eaten] = self.score(eaten)
+        if move_result.won.size:
+            won = move_result.won
+            # Add the apple that the snake never got a chance to eat
+            self._history_score_final[(self.nr_games(won)-1) % self.HISTORY, won] += 1
+
+        frame0 = self.frame_then()
+        if frame0 >= 0:
+            h0 = self.frame_history_then()
+            # frame  &= self.MASK
+            frame0 &= self.MASK
+            self._history_result0 = self._history_result[h0]
+            eaten    = self._history_result0.eaten
+            collided = self._history_result0.collided
+            self._history_score[eaten] += 1
+            if self._history_pit:
+                self._history_apple0[eaten] = self._history_apple[h0]
+                self._history_head0 = self._snake_body[self._all_snakes, frame0]
+                # At frame0 == 0 this fetches nonsense tail values from
+                # _snake_body. However the next line immediately replaces all
+                # these values
+                tail = self._snake_body[self._all_snakes, (frame0 -1 - self._history_score) & self.MASK]
+                tail[eaten] = self._history_head0[eaten]
+                self._history_field[self._all_snakes, tail] = False
+                self._history_field0[collided] = 0
+                self._history_field[self._all_snakes, self._history_head0] = True
+
+            self._history_score[collided] = 0
+            self._history_game0[collided] = self._history_game[h0]
+            # print(self._history_score_final)
+            self._history_gained = self._history_score_final[self._history_game0 % self.HISTORY, self._all_snakes] - self._history_score
+            # print("Score", self._history_score)
+            # print("Gained", self._history_gained)
+            # print(self._history_score_final)
+
+
     def move_evaluate(self, pos):
-        is_eat       = pos == self._apple
+        is_eat = pos == self.apple()
         is_collision = self._field[self._all_snakes, pos]
         # is_win really checks for "about to win" instead of "won"
         # So the pit is completely filled except for one spot which has
         # the apple. So we still need to check if the snake gets the apple
         # And in fact any non-collision move MUST get the apple
-        is_win       = self._body_length >= self.AREA-2
+        is_win = self._body_length >= self.AREA-2
         won = is_win.nonzero()[0]
         if won.size:
             # Wins will be rare so it's no problem if this is a bit slow
@@ -1039,8 +1182,10 @@ class Snakes:
                 self._moves_max = moves_max
             self._score_total_games += won.size
             score_max = np.amax(self._body_length[won])+1
-            if score_max > self._score_max:
-                self._score_max = score_max
+            if score_max > self._score_max_local:
+                self._score_max_local = score_max
+                if score_max > self._score_max:
+                    self._score_max = score_max
 
         self._nr_games[collided] += 1
         self._nr_games_total += collided.size
@@ -1052,8 +1197,10 @@ class Snakes:
         self._score_total_snakes -= body_total
         self._score_total_games  += body_total
         score_max = np.amax(body_collided)
-        if score_max > self._score_max:
-            self._score_max = score_max
+        if score_max > self._score_max_local:
+            self._score_max_local = score_max
+            if score_max > self._score_max:
+                self._score_max = score_max
 
         nr_moves = self.nr_moves(collided)
         self._moves_total_games += nr_moves.sum()
@@ -1127,7 +1274,8 @@ class Snakes:
 
     def move_debug(self):
         print("=" * 20, self.frame(), "=" * 20)
-        print(self.snakes_string(1, 1))
+        # print(self.snakes_string(rows=1, columns=1))
+        print(self.snake_string(np.array([[self._debug_index]])))
 
         if self._xy_apple:
             y, x = self.yx(self._apple)
@@ -1152,12 +1300,13 @@ class Snakes:
         nr_windows = min(self.nr_snakes, display.windows)
         # self._all_windows = np.arange(nr_windows-1, -1, -1, dtype=TYPE_INDEX)
         self._all_windows = np.arange(nr_windows, dtype=TYPE_INDEX)
-        self._debug_index = self._all_windows[0] if nr_windows else None
+        self._debug_index = self._all_windows[0] if nr_windows else 0
 
         self._nr_games_won_total = 0
         self._nr_games_max = 0
         self._nr_games_total = 0
         self._score_max = 0
+        self._score_max_local = 0
         self._score_total_snakes = 0
         self._score_total_games  = 0
         self._moves_max = 0
@@ -1180,6 +1329,14 @@ class Snakes:
         self.head_set(head)
         self.new_apples(self._all_snakes)
 
+        if self._history:
+            self._history_result0 = None
+            self._history_result  = [None] * self.HISTORY
+            self._history_game    = [None] * self.HISTORY
+            if self._history_pit:
+                self._history_head0 = None
+                self._history_apple = [None] * self.HISTORY
+
         # Pass w_head instead of head so we do self.yx only where needed
         w_head = self.yx(head[self._all_windows])
         # print_xy("Initial head:", w_head)
@@ -1195,16 +1352,20 @@ class Snakes:
         # Initial values for move_result
         # This is for planners that want to know about what happened on
         # the previous move. But there was no previous move the first time...
-        # Planners that care will have to test for <None> values or override
-        # "run_start_results" with something that makes sense to them
-        return MoveResult(collided = self._all_snakes)
+        # Planners that care will have to test for <None> values or frame() or
+        # override "run_start_results" with something that makes sense to them
+        return MoveResult(collided = self._all_snakes,
+                          eaten    = self._all_snakes,
+                          won      = np.empty(0, dtype=TYPE_SNAKE))
 
 
     # We are done moving snakes. Report some statistics and cleanup
     def run_finish(self):
         score_max = np.amax(self._body_length)
-        if score_max > self._score_max:
-            self._score_max = score_max
+        if score_max > self._score_max_local:
+            self._score_max_local = score_max
+            if score_max > self._score_max:
+                self._score_max = score_max
         moves_max = self._cur_move - np.amin(self._nr_moves)
         if moves_max > self._moves_max:
             self._moves_max = moves_max
@@ -1217,6 +1378,9 @@ class Snakes:
     def move_generator(self, display):
         move_result = self.move_result_start()
         while True:
+            if self._history:
+                self.move_remember(move_result)
+
             if self.debug:
                 self.move_debug()
 

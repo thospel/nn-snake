@@ -84,21 +84,33 @@ Snakes
 
 Usage:
   snake.py greedy [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
-           [--width=<width>] [--height=<height>] [--frames=<frames>]
-           [--columns=columns] [--rows=rows] [--block=<block_size>]
-           [--wall=<wall>] [--pygame] [--dump-file=<file>] [--log-file=<log>]
-  snake.py q-table [--debug] [--stepping] [--fps=<fps>]
-           [--width=<width>] [--height=<height>] [--frames=<frames>]
-           [--columns=columns] [--rows=rows] [--block=<block_size>]
-           [--wall=<wall>] [--symmetry] [--single] [--pygame]
-           [--vision-file=<file>] [--dump-file=<file>] [--log-file=<log>]
-           [--learning-rate=<r>] [--discount <ratio>] [--accelerated]
+           [--width=<width>] [--height=<height>]
+           [--frames=<frames>] [--games=<games>] [--dump=<file>]
+           [--columns=columns] [--rows=rows] [--block=<block_size>] [--pygame]
+           [--log-period=<period>] [--log=<log>] [--tensor-board=<dir>]
   snake.py cycle [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
-           [--width=<width>] [--height=<height>] [--frames=<frames>]
-           [--columns=columns] [--rows=rows] [--block=<block_size>]
-           [--pygame] [--dump-file=<file>] [--log-file=<log>]
-  snake.py -f <file>
+           [--width=<width>] [--height=<height>]
+           [--frames=<frames>] [--games=<games>] [--dump=<file>]
+           [--columns=columns] [--rows=rows] [--block=<block_size>] [--pygame]
+           [--log-period=<period>] [--log=<log>] [--tensor-board=<dir>]
+           [--risk=<risk_max>] [--show-cycle]
+  snake.py q-table [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
+           [--width=<width>] [--height=<height>]
+           [--frames=<frames>] [--games=<games>] [--dump=<file>]
+           [--columns=columns] [--rows=rows] [--block=<block_size>] [--pygame]
+           [--log-period=<period>] [--log=<log>] [--tensor-board=<dir>]
+           [--wall=<wall>] [--symmetry] [--single]
+           [--vision-file=<file>] [--reward-file=<file>]
+           [--learning-rate=<r>] [--discount <ratio>] [--accelerated]
+           [--history=<history>] [--history-pit]
+  snake.py a2c [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
+           [--width=<width>] [--height=<height>]
+           [--frames=<frames>] [--games=<games>] [--dump=<file>]
+           [--columns=columns] [--rows=rows] [--block=<block_size>] [--pygame]
+           [--log-period=<period>] [--log=<log>] [--tensor-board=<dir>]
+           [--history=<history>]
   snake.py benchmark
+  snake.py -f <file>
   snake.py (-h | --help)
   snake.py --version
 
@@ -115,16 +127,24 @@ Options:
   --columns=<columns>     Columns of pits to display [default: 2]
   --rows=<rows>           Rows of pits to display [default: 1]
   --frames=<frames>       Stop automatically at this frames number [Default: -1]
+  --games=<games>         Stop automatically once this game number is reached.
+                          The actual number of games may be higher since extra
+                          games can end during the final frame [Default: -1]
   --wall=<wall>           Have state for distance from wall up to <wall>
                           [Default: 2]
   --symmetry              Apply dihedral symmetry
-  --pygame                Use pygame for output
   --vision-file=<file>    Read snake vision from file
-  --log-file=<file>       Write to logfile. Use an empty string if you
-                          explicitely don't want any logging
-                          [Default: snakes.log.txt]
-  --dump-file=<file>      Which file to dump to on keypress
+  --reward-file=<file>    Read rewards from file
+  --show-cycle            Show the Hamiltonian cycle on the background
+  --risk=<risk_max>       Maximum risk to take when taking shortcuts in
+                          Hamiltonian cycles [Default: 0.1]
+  --pygame		  Use pygame for output (default is qt5)
+  --log-period=<period>   How often to write a log entry. Can be given in
+                          seconds (s) or frames (f) [Default: 1s]
+  --log=<file>            Write to logfile <file>
+  --dump=<file>           Which file to dump to on keypress
                           [Default: snakes.dump.txt]
+  --tensor-board=<dir>    Write tensorbaord data to dir
   --single                Any one state can be updated at most once per frame
                           Use this if all snakes tend to be in different states
                           since it allows you to use an undivided learning rate
@@ -136,8 +156,15 @@ Options:
   --discount <ratio>      state to state Discount [Default: 0.99]
   --debug                 Run debug code
   --accelerated           Prefill the Q table with walls
-                          It will learn this by itself but takes a long time if
-                          there are very many states
+                          It will learn this by itself but may take a long time
+                          if there are very many states
+  --history=<history>     Repeat everything <history> moves delayed. This
+                          allows learning to evaluate a given old position by
+                          how it will do by effectively looking <history> steps
+                          into the future [Default: 1]
+  --history-pit           Also restore the whole pit layout for history. This
+                          is not needed in the given mode but allows for easier
+                          debugging (the historic layout is shown during debug)
   -f <file>:              Used by jupyter, ignored
 
 Key actions:
@@ -170,6 +197,15 @@ If all moves crash it selects one of these at random.
 ### Q table mode
 
 Learns using a simple [Q table](https://en.wikipedia.org/wiki/Q-learning) on a restricted view
+
+### Cycle mode
+
+Again not an A.I. All snakes simply follows a randomly generated
+[Hamiltonian cycle](https://en.wikipedia.org/wiki/Hamiltonian_cycle). The snake
+will take shortcuts towards the apple as long as the falure risk is below a
+given limit (the risk is that the random number generator will keep generating
+apples in front of the snake so it keeps growing until it runs into its own
+tail)
 
 ## License
 
