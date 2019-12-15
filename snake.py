@@ -43,7 +43,8 @@ Usage:
            [--frames=<frames>] [--games=<games>] [--dump=<file>]
            [--columns=columns] [--rows=rows] [--block=<block_size>] [--pygame]
            [--log-period=<period>] [--log=<log>] [--tensor-board=<dir>]
-           [--history=<history>]
+            [--reward-file=<file>] [--learning-rate=<r>] [--discount <ratio>]
+           [--history=<history>] [--entropy-beta=<beta>]
   snake.py benchmark
   snake.py -f <file>
   snake.py (-h | --help)
@@ -97,9 +98,12 @@ Options:
                           allows learning to evaluate a given old position by
                           how it will do by effectively looking <history> steps
                           into the future [Default: 1]
-  --history-pit           Also restore the whole pit layout for history. This
-                          is not needed in the given mode but allows for easier
-                          debugging (the historic layout is shown during debug)
+  --history-pit           Also restore the whole pit layout for history, taking
+                          extra time and memory. This is not completely needed
+                          in the given mode but allows for easier debugging
+                          (the historic layout is shown during debug)
+  --entropy-beta=<beta>   Fraction for entropy bonus to the loss function
+                          [Default: 0.0001]
   -f <file>:              Used by jupyter, ignored
 
 Key actions:
@@ -197,8 +201,12 @@ elif arguments["q-table"]:
     snake_kwargs["history_pit"]   = arguments["--history-pit"]
 elif arguments["a2c"]:
     from snakes.actor_critic import SnakesA2C
+    snake_class = SnakesA2C
     snake_kwargs["history"]       = int(arguments["--history"])
-    snake_kwargs["history_pit"]   = True
+    snake_kwargs["reward_file"]   = arguments["--reward-file"]
+    snake_kwargs["learning_rate"] = float(arguments["--learning-rate"])
+    snake_kwargs["discount"]      = float(arguments["--discount"])
+    snake_kwargs["entropy_beta"]  = float(arguments["--entropy-beta"])
 else:
     raise(AssertionError("Unspecified snake type"))
 

@@ -1,6 +1,18 @@
+from snakes import Snakes, Rewards, TYPE_FLOAT, TYPE_BOOL
 import numpy as np
 import tensorflow as tf
 import tensorflow.keras.layers as kl
+import tensorflow.keras.losses as kls
+import tensorflow.keras.regularizers as kr
+import tensorflow.keras.optimizers as ko
+# import traceback
+
+def is_interactive():
+    import __main__ as main
+    return not hasattr(main, '__file__')
+
+
+CONVOLUTION = False
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
@@ -11,53 +23,114 @@ if gpus:
     except RuntimeError as e:
         # Memory growth must be set before GPUs have been initialized
         print(e)
-print("Eager:", tf.executing_eagerly())
+if is_interactive():
+    print("Eager:", tf.executing_eagerly())
 
 
-class ProbabilityDistribution(keras.Model):
+class ProbabilityDistribution(tf.keras.Model):
     def call(self, logits):
+        # print("Call Probability", flush=True)
+        # traceback.print_stack()
         # sample a random categorical action from given logits
-        # return tf.squeeze(tf.random.categorical(logits, 1), axis=-1)
-        return tf.random.categorical(logits, 1)
+        # Squeeze since each row of logits becomes a row with 1 action
+        return tf.squeeze(tf.random.categorical(logits, 1), axis=-1)
 
 
-class ActorCriticModel(keras.Model):
-    def __init__(self, num_actions):
+class ActorCriticModel(tf.keras.Model):
+    def __init__(self, num_actions, height, width):
         super().__init__('mlp_policy')
+
+        self.dist = ProbabilityDistribution()
+
         # no tf.get_variable(), just simple Keras API
-        self.hidden1 = kl.Dense(128, activation='relu')
-        self.hidden2 = kl.Dense(128, activation='relu')
+        if CONVOLUTION:
+            self.model_conv(height, width)
+        else:
+            self.model_dense(height, width)
         self.value = kl.Dense(1, name='value')
         # logits are unnormalized log probabilities
         self.logits = kl.Dense(num_actions, name='policy_logits')
-        self.dist = ProbabilityDistribution()
+
+
+    def model_conv(self, height, width):
+        self.conv1 = kl.Conv2D(filters = 3, kernel_size = 3,
+                               activation='relu',
+                               # data_format = "channels_first",
+                               input_shape=(height, width, 3))
+        self.conv2 = kl.Conv2D(filters = 3, kernel_size = 3,
+                               activation='relu',
+                               # data_format = "channels_first",
+                               input_shape=(height, width, 3))
+        self.pooling1 = kl.MaxPooling2D()
+        self.pooling2 = kl.MaxPooling2D()
+        self.flatten1 = kl.Flatten()
+        self.flatten2 = kl.Flatten()
+
+
+    def model_dense(self, height, width):
+        self.hidden1 = kl.Dense(128, activation='relu', kernel_regularizer=kr.l2(0.0001))
+        self.hidden2 = kl.Dense(128, activation='relu', kernel_regularizer=kr.l2(0.0001))
 
 
     # Typically gets called only once (on first evaluation)
+    @tf.function
     def call(self, inputs):
+        # print("Call Model", flush=True)
+        # traceback.print_stack()
         # inputs is a numpy array, convert to Tensor
         x = tf.convert_to_tensor(inputs, dtype=tf.float32)
-        # separate hidden layers from the same input tensor
-        hidden_logs = self.hidden1(x)
-        hidden_vals = self.hidden2(x)
-        return self.logits(hidden_logs), self.value(hidden_vals)
+        # x = inputs
+
+        if CONVOLUTION:
+            # separate hidden layers from the same input tensor
+            logs = self.conv1(x)
+            logs = self.pooling1(logs)
+            logs = self.flatten1(logs)
+
+            vals = self.conv2(x)
+            vals = self.pooling2(vals)
+            vals = self.flatten2(vals)
+        else:
+            # logs = self.hidden1(x)
+            # vals = self.hidden2(x)
+            x = self.hidden1(x)
+            x = self.hidden2(x)
+            logs = x
+            vals = x
+
+        return self.logits(logs), self.value(vals)
 
 
     def action_value(self, obs):
+        # print("Action_value")
+
+        # I just want to call predict() here, not predict_on_batch()
+        # But my current version of tensorflow (2.0) seems to leak memory
+        # This may be https://github.com/keras-team/keras/issues/13118
+        # And https://github.com/tensorflow/tensorflow/issues/33030
+        # So this is possibly fixed in 2.1.0
         # executes call() under the hood (on the first invocation)
-        logits, value = self.predict(obs)
+        logits, value = self.predict_on_batch(obs)
         # print("Logits:", logits)
-        action = self.dist.predict(logits)
+
+        # Same comment applies: should really just be "predict"
+        action = self.dist.predict_on_batch(logits)
         # A simpler option would be:
         # action = tf.random.categorical(logits, 1)
-        # However this wouldn't work if we turn of eager mode and use
-        # static graph execution since we can't call random on graphs. only on values
-        # return np.squeeze(action, axis=-1), np.squeeze(value, axis=-1)
-        return action, value
+        # However this wouldn't work if we turn off eager mode and use static
+        # graph execution since we can't call random on graphs, only on values
+        # We can squeeze values since the last dense layer has a size of 1 unit
+        return logits, action, np.squeeze(value, axis=-1)
+        # return action, value
 
-ac = ActorCriticModel(4)
 
-ac.action_value(np.array([[1.2,2.3,3.6,4.7,5.8,3.9]],dtype=np.float32).reshape(3,2))
+if is_interactive():
+    ac = ActorCriticModel(4, 4, 5)
+
+    vals = np.arange(120,dtype=np.float32).reshape(-1,4,5,3)
+    print(vals)
+
+    print(ac.action_value(vals))
 
 """
 Batch of size n
@@ -90,4 +163,210 @@ losses = model.train on batch(state, [L, R])
 """
 
 class SnakesA2C(Snakes):
-    pass
+    def __init__(self, *args,
+                 xy_head  = False,
+                 xy_apple = False,
+                 history_pit = True,
+                 reward_file = None,
+                 point_image = True,
+                 channels = 1,
+                 learning_rate = 0.1,
+                 discount      = 0.9,
+                 entropy_beta  = 0.0001,
+                 **kwargs):
+
+        if reward_file is None:
+            self._rewards = Rewards.default()
+        else:
+            self._rewards = Rewards.parse_file(reward_file)
+
+        super().__init__(*args,
+                         xy_head = xy_head,
+                         xy_apple = xy_apple,
+                         history_pit = history_pit,
+                         channels = channels,
+                         point_image = point_image,
+                         **kwargs)
+
+        self._learning_rate = TYPE_FLOAT(learning_rate)
+        self._discount = TYPE_FLOAT(discount)
+        self._value_factor = 0.5
+        self._entropy_beta = entropy_beta
+        # self._eat_frame = np_empty(self.nr_snakes, TYPE_MOVES)
+        self._model = ActorCriticModel(4, width = self.WIDTH, height = self.HEIGHT)
+        self._model.compile(
+            # optimizer = ko.RMSprop(lr = self._learning_rate),
+            optimizer = 'adam',
+            # define separate losses for policy logits and value estimate
+            loss = [self.loss_logits, self.loss_value])
+        print("Eager model:", self._model.run_eagerly)
+        print("Eager TF:", tf.executing_eagerly())
+
+
+    @tf.function
+    def loss_logits(self, actions_advantages, logits):
+        # print("Logits_loss", type(actions_advantages), type(logits), flush=True)
+        # traceback.print_stack()
+        # a trick to input actions and advantages through same API
+        actions, advantages = tf.split(actions_advantages, 2, axis=-1)
+        # sparse categorical CE loss obj that supports sample_weight arg on
+        # call() from_logits argument ensures transformation into normalized
+        # probabilities
+        weighted_sparse_ce = kls.SparseCategoricalCrossentropy(from_logits=True)
+        # policy loss is defined by policy gradients, weighted by advantages
+        # note: we only calculate the loss on the actions we've actually taken
+        policy_loss = weighted_sparse_ce(actions, logits, sample_weight=advantages)
+        # entropy loss can be calculated via CE over itself
+        entropy_loss = kls.categorical_crossentropy(logits, logits, from_logits=True)
+        # here signs are flipped because optimizer minimizes
+        return policy_loss - self._entropy_beta * entropy_loss
+
+
+    @tf.function
+    def loss_value(self, rewards, value):
+        # print("Value_loss", type(rewards), type(value))
+        # traceback.print_stack()
+        # value loss is typically MSE between value estimates and returns
+        return self._value_factor * kls.mean_squared_error(rewards, value)
+
+
+    def log_constants(self, log_action):
+        super().log_constants(log_action)
+        log_action("ValueAlpha",  "%11.3f"  , self._value_factor)
+        log_action("EntropyBeta", "%10.3f"  , self._entropy_beta)
+
+
+    def log_frame(self, log_action, current):
+        super().log_frame(log_action, current)
+        if self._loss:
+            log_action("Loss/Total",  "%11.3f", self._loss[0])
+            log_action("Loss/Logits", "%10.3f", self._loss[1])
+            log_action("Loss/Value",  "%11.3f", self._loss[2])
+
+
+    def run_start(self, display):
+        super().run_start(display)
+
+        self._old_action = [None] * self.HISTORY
+        self._old_values = [None] * self.HISTORY
+        self._loss = None
+
+
+    def move_select(self, move_result, display):
+        debug = self.debug
+
+        head  = self.head()
+        apple = self.apple()
+
+        h  = self.frame_history_now()
+        h0 = self.frame_history_then()
+
+        batch_size = 2048
+        di, dj = divmod(self._debug_index, batch_size)
+        dii = di * batch_size
+        all_actions = []
+        all_values  = []
+        for i in range(0, self.nr_snakes, batch_size):
+            i1 = min(i+batch_size, self.nr_snakes)
+            r = range(i, i1)
+            input = [[self._field0[j],
+                      self._point_image[head[j]],
+                      self._point_image[apple[j]]] for j in r]
+            # input = tf.convert_to_tensor(input, dtype=tf.float32)
+            input = np.array(input, dtype=TYPE_FLOAT)
+            if CONVOLUTION:
+                # Move channels to the end
+                # Tensorflow CPU cannot handle channel first (GPU can)
+                channels = np.rollaxis(input, 1,4)
+                # print(channels.shape)
+            else:
+                channels = input.reshape(input.shape[0], -1)
+            assert channels.base is input
+            # The returned values are of type numpy.ndarray
+            logits, actions, values = self._model.action_value(channels)
+            if debug and dii == i:
+                p = np.exp(logits[dj])/sum(np.exp(logits[dj]))
+                print("Logits", logits[dj], "p", p)
+            logits = None
+            # print(actions, values)
+            all_actions.append(actions)
+            all_values.append(values)
+
+        all_values = np.concatenate(all_values, axis=None)
+        if h0 is not None:
+            reward_moves = np.random.uniform(
+                self._rewards.move - self._rewards.rand /2,
+                self._rewards.move + self._rewards.rand /2)
+            reward_moves = np.random.uniform(
+                (reward_moves-self._rewards.rand/2) * self._history,
+                (reward_moves+self._rewards.rand/2) * self._history,
+                size=self.nr_snakes)
+            rewards = self._history_gained * self._rewards.apple
+            rewards += np.where(self._history_game0 == self._nr_games,
+                                # Bootstrap from discounted best estimate
+                                (all_values + reward_moves) * self._discount,
+                                self._rewards.crash)
+            # Calculate the advantage = current reward - predicted reward
+            advantage = rewards - self._old_values[h0]
+
+            old_head  = self._history_head0
+            old_apple = self._history_apple0
+            old_action = self._old_action[h0]
+
+            if debug:
+                print("Cur Value = %f, Old Value = %f, Old Action = %d" %
+                      (all_values[self._debug_index], self._old_values[h0][self._debug_index], old_action[di][dj]))
+                print("Reward = %f, Advantage = %f (Old Game = %d, New Game = %d)" %
+                      (rewards[self._debug_index],
+                       advantage[self._debug_index],
+                       self._history_game0[self._debug_index],
+                       self._nr_games[self._debug_index]))
+
+            batch_size = 2048
+            losses = [0, 0, 0]
+            for i in range(0, self.nr_snakes, batch_size):
+                i1 = min(i+batch_size, self.nr_snakes)
+                r = range(i, i1)
+                input = [[self._history_field0[j],
+                          self._point_image[old_head[j]],
+                          self._point_image[old_apple[j]]] for j in r]
+                # input = tf.convert_to_tensor(input, dtype=tf.float32)
+                input = np.array(input, dtype=TYPE_FLOAT)
+                if CONVOLUTION:
+                    # Move channels to the end
+                    # Tensorflow CPU cannot handle channel first (GPU can)
+                    channels = np.rollaxis(input, 1,4)
+                    # print(channels.shape)
+                else:
+                    channels = input.reshape(input.shape[0], -1)
+                assert channels.base is input
+                # print(self._model.metrics_names)
+                # print(channels.shape)
+                # print(old_action[i//batch_size].shape)
+                # print(advantage.shape)
+                # print(rewards.shape)
+                # Combine action and advantage into shape (batch,2)
+                # Each argument to train_on_batch must have the same number of
+                # samples, so each shape should start with batch
+                action_advantage = np.stack((old_action[i//batch_size], advantage[i:i1]), axis=1)
+                loss = self._model.train_on_batch(
+                    channels,
+                    [action_advantage, rewards[i:i1]])
+                assert len(loss) == 3
+                # 0: total loss (output_1_loss + output_2_loss)
+                # 1: output_1_loss
+                # 2: output_2_loss
+                losses[0] += loss[0]
+                losses[1] += loss[1]
+                losses[2] += loss[2]
+
+            self._loss = losses
+            if debug:
+                print("Loss", losses[0])
+
+        self._old_action[h] = all_actions
+        self._old_values[h] = all_values
+        if debug:
+            print("Value = %f, action = %d" % (all_values[self._debug_index], all_actions[di][dj]))
+        pos = head + self.DIRECTIONS[np.concatenate(all_actions, axis=None)]
+        return pos

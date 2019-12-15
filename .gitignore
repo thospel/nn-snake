@@ -16,3 +16,4 @@ snakes.log*.txt
 snakes.capture.*.png
 snakes.stream.*.rgb
 __pycache__
+profile_default

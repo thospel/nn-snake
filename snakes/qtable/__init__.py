@@ -1,68 +1,5 @@
-from snakes import Snakes, Vision, np_empty, TYPE_MOVES, TYPE_POS, TYPE_UPOS, TYPE_ID
+from snakes import Snakes, Vision, Rewards, np_empty, TYPE_MOVES, TYPE_POS, TYPE_UPOS, TYPE_ID, TYPE_FLOAT
 import numpy as np
-import re
-from dataclasses import dataclass
-
-
-TYPE_FLOAT    = np.float32
-
-@dataclass
-class Rewards():
-    apple: TYPE_FLOAT
-    crash: TYPE_FLOAT
-    move:  TYPE_FLOAT
-    rand:  TYPE_FLOAT
-    initial: TYPE_FLOAT
-
-
-    @classmethod
-    def parse_file(cls, file):
-        with open(file, "r") as fh:
-            return cls.parse(fh.read())
-
-
-    @classmethod
-    def parse(cls, str):
-        rewards = {
-            "apple":   None,
-            "crash":   None,
-            "move":    None,
-            "rand":    None,
-            "initial": None
-        }
-
-        for line in str.splitlines():
-            line = re.sub(r"#.*", "", line).strip()
-            if line == "":
-                continue
-            match = re.fullmatch(r"(\w+)\s*:\s*([+-]?[0-9]+(?:\.[0-9]*)?)", line)
-            if not match:
-                raise(ValueError("Could not parse: " + line))
-            key, value = match.groups()
-            if key not in rewards:
-                raise(ValueError("Unknown key: " + key))
-            if rewards[key] is not None:
-                raise(ValueError("Multiple key: " + key))
-            rewards[key] = TYPE_FLOAT(value)
-        missing = [key for key in rewards if rewards[key] is None]
-        if missing:
-            raise(ValueError("Missing key: " + ", ".join(missing)))
-        return cls(**rewards)
-
-
-    @classmethod
-    def default(cls):
-        return cls.parse("""
-		apple:   1
-		crash: -10
-		# A small penalty for taking too long to get to an apple
-		move:   -0.001
-		# Small random disturbance to escape from loops
-		rand:    0.001
-		# Prefill with 0 is enough to encourage some early exploration
-		# since we have a negative reward for moving
-		initial: 0
-        """)
 
 
 class SnakesQ(Snakes):
@@ -117,7 +54,6 @@ class SnakesQ(Snakes):
                          **kwargs)
 
         self._single = single
-        # self._rewards = np.empty(self._nr_snakes, dtype=TYPE_FLOAT)
         self._learning_rate = TYPE_FLOAT(learning_rate)
         if not self._single:
             self._learning_rate /= self.nr_snakes
@@ -430,6 +366,20 @@ class SnakesQ(Snakes):
     def vision_from_state(self, state):
         apple, field = self.unstate(state)
 
+    """
+    Why it tends to get into loops near the wall:
+    State 194:
+
+        @O    => Mmm, apple. Moving left is good!
+
+    State 122:
+
+      |@O    => When moving right it gets into state 194
+                Hey, that's prety good!
+                => always move right!
+
+    And now it starts to bounce between State 194 and State 122
+    """
 
     def move_select(self, move_result, display):
         # debug = self.frame() % 100 == 0
@@ -571,10 +521,9 @@ class SnakesQ(Snakes):
 
         # Decide what to do
         q_row = self._q_table[state]
-        if debug:
-            print("Qrow after: ", q_row[self._debug_index])
         action = q_row.argmax(axis=-1).astype(TYPE_ID)
         if debug:
+            print("Qrow after: ", q_row[self._debug_index])
             print("Old Action = %s, New action = %u, Moves since apple = %u" %
                   ("None" if h0 is None else str(self._old_action[h0][self._debug_index]),
                    action[self._debug_index],

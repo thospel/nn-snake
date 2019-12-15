@@ -182,18 +182,22 @@ class Display:
 
         def log_action(name, format, value):
             log_fh(fh, name, format, value)
+        def log_action_start(name, format, value):
+            log_action(name + "_start", format, value)
 
-        log_action("time_start", "%s",
-                   time.strftime("%Y-%m-%d %H:%M:%S %z",
-                                 time.localtime(self._time_start)))
-        log_action("time_start_epoch",     "%.3f", self._time_start)
-        log_action("time_start_monotonic", "%.3f", self._time_monotonic_start)
-        log_action("time_start_process",   "%.3f", self._time_process_start)
-
+        self._log_start(log_action_start)
         snakes = self.snakes()
         snakes.log_constants(log_action)
-
         log_action("Frame", "%d", snakes.frame())
+
+
+    def _log_start(self, log_action):
+        log_action("time", "%s",
+                   time.strftime("%Y-%m-%d %H:%M:%S %z",
+                                 time.localtime(self._time_start)))
+        log_action("time_epoch",     "%.3f", self._time_start)
+        log_action("time_monotonic", "%.3f", self._time_monotonic_start)
+        log_action("time_process",   "%.3f", self._time_process_start)
 
 
     def log_stop(self):
@@ -202,12 +206,18 @@ class Display:
 
         self.log_frame()
         fh = self._log_fh
-        print(time.strftime("time_end: %Y-%m-%d %H:%M:%S %z",
-                            time.localtime(self._time_end)),
-              file=fh)
-        print("time_end_epoch: %.3f" % self._time_end, file=fh)
-        print("time_end_monotonic:", self._time_monotonic_end, file=fh)
-        print("time_end_process:",  self._time_process_end,  file=fh)
+        def log_action(name, format, value):
+            log_fh(fh, name + "_end", format, value)
+        self._log_stop()
+
+
+    def _log_stop(self, log_action):
+        log_action("time", "%s",
+                   time.strftime("%Y-%m-%d %H:%M:%S %z",
+                                 time.localtime(self._time_end)))
+        log_action("time_epoch",     "%.3f", self._time_end)
+        log_action("time_monotonic", "%.3f", self._time_monotonic_end)
+        log_action("time_process",   "%.3f", self._time_process_end)
 
 
     def log_frame(self):
@@ -245,6 +255,20 @@ class Display:
             return
 
         frame = self.snakes().frame()
+
+        def log_action_start(name, format, value):
+            name = "Start/%s" % name
+            if format == " %s" or format == "%s":
+                tf.summary.text(name,
+                                "    " + value.replace("\n", "\n    "),
+                                step=frame)
+            else:
+                tf.summary.scalar(name,
+                                  value,
+                                  step=frame)
+
+        self._log_start(log_action_start)
+
         def log_action(name, format, value):
             if format == " %s" or format == "%s":
                 tf.summary.text(name,
@@ -254,16 +278,28 @@ class Display:
                 tf.summary.scalar("Constants/%s" % name,
                                   value,
                                   step=frame)
-
-        log_action("time_start", " %s",
-                   time.strftime("%Y-%m-%d %H:%M:%S %z",
-                                 time.localtime(self._time_start)))
-        log_action("time_start_epoch",     "%.3f", self._time_start)
-        log_action("time_start_monotonic", "%.3f", self._time_monotonic_start)
-        log_action("time_start_process",   "%.3f", self._time_process_start)
-
         snakes = self.snakes()
         snakes.log_constants(log_action)
+
+
+    def log_tensor_board_stop(self):
+        if not self._tb_writer:
+            return
+
+        self.log_tensor_board()
+
+        frame = self.snakes().frame()
+        def log_action_stop(name, format, value):
+            name = "End/%s" % name
+            if format == " %s" or format == "%s":
+                tf.summary.text(name,
+                                "    " + value.replace("\n", "\n    "),
+                                step=frame)
+            else:
+                tf.summary.scalar(name,
+                                  value,
+                                  step=frame)
+        self._log_stop(log_action_stop)
 
 
     def log_tensor_board(self):
@@ -283,27 +319,14 @@ class Display:
             "elapsed": self.elapsed() - self.paused(),
             "used": self.elapsed_process(),
             "frame": snakes.frame(),
-            "score_total":    snakes.score_total_games(),
-            "nr_games_won":   snakes.nr_games_won_total(),
-            "nr_games_total": snakes.nr_games_total(),
-            "nr_moves_total": snakes.nr_moves_total_games()
         }
 
-        log_action("Frame",   "%12d"       , snakes.frame())
-        log_action("Elapsed", "%14.3f"     , self.elapsed())
-        log_action("Paused",  "%15.3f"     , self.paused())
-        log_action("Used",    "%17.3f"     , self.elapsed_process())
-        log_action("Frame rate",  "%11.3f" , self.frame_rate(snakes))
-        log_action("Games Total", "%6d"    , current["nr_games_total"])
-        log_action("Games Won",   "%8d"    , snakes.nr_games_won_total())
-        log_action("Score Max",   "%8d"    , snakes.score_max())
-        log_action("L Score Max", "%6d"    , snakes.score_max_local())
-        log_action("Score Total", "%6d"    , current["score_total"])
-        log_action("Moves Max",   "%8d"    , snakes.nr_moves_max())
-        log_action("Moves total", "%6d"    , current["nr_moves_total"])
-        log_action("Moves/Game", "%11.3f"  , snakes.nr_moves_per_game())
-        log_action("Moves/Apple", "%10.3f" , snakes.nr_moves_per_apple())
-        log_action("Score/Game", "%11.3f"  , snakes.score_per_game())
+        log_action("Frame",      "%12d"   , snakes.frame())
+        log_action("Elapsed",    "%14.3f" , self.elapsed())
+        log_action("Paused",     "%15.3f" , self.paused())
+        log_action("Used",       "%17.3f" , self.elapsed_process())
+        log_action("Frame rate", "%11.3f" , self.frame_rate(snakes))
+        snakes.log_frame(log_action, current)
 
         if previous:
             delta = { k: v - previous[k] for k, v in current.items() }
@@ -315,28 +338,7 @@ class Display:
             if delta["used"]:
                 log_action("L Frame/Used",  "%9.3f" ,
                            delta["frame"] / delta["used"])
-
-            if delta["nr_games_total"]:
-                log_action("L Score/Game", "%9.3f" ,
-                            delta["score_total"] / delta["nr_games_total"])
-                log_action("L Moves/Game", "%9.3f" ,
-                            delta["nr_moves_total"] / delta["nr_games_total"])
-
-            if delta["score_total"]:
-                log_action("L Moves/Apple", "%8.3f" ,
-                           delta["nr_moves_total"] / delta["score_total"])
-
-            if delta["frame"]:
-                log_action("L Games/Frame", "%8.3f",
-                           delta["nr_games_total"] / delta["frame"])
-                log_action("L Won/Frame", "%10.3f",
-                           delta["nr_games_won"] / delta["frame"])
-                log_action("L Score/Frame", "%8.3f",
-                           delta["score_total"] / delta["frame"])
-
-            if delta["nr_games_total"]:
-                log_action("L Won/Game", "%11.3f",
-                           delta["nr_games_won"] / delta["nr_games_total"])
+            snakes.log_delta(log_action, delta)
 
         return current
 
@@ -644,6 +646,7 @@ class Display:
     def run2(self):
         self.timestamp()
         self.snakes().run_finish()
+        self.log_tensor_board_stop()
         self.log_stop()
         self.log_close()
         self.stop()

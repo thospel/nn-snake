@@ -2,6 +2,7 @@ import itertools
 import collections.abc
 import time
 import math
+import re
 import platform
 import hashlib
 import numpy as np
@@ -23,6 +24,7 @@ TYPE_SCORE = np.uint32
 TYPE_MOVES = np.uint32
 TYPE_GAMES = np.uint32
 TYPE_SNAKE = np.uint32
+TYPE_FLOAT = np.float32
 
 
 def script():
@@ -254,6 +256,65 @@ class VisionFile(Vision):
     def __init__(self, file):
         with open(file) as fh:
             super().__init__(fh.read())
+
+
+@dataclass
+class Rewards():
+    apple: TYPE_FLOAT
+    crash: TYPE_FLOAT
+    move:  TYPE_FLOAT
+    rand:  TYPE_FLOAT
+    initial: TYPE_FLOAT
+
+
+    @classmethod
+    def parse_file(cls, file):
+        with open(file, "r") as fh:
+            return cls.parse(fh.read())
+
+
+    @classmethod
+    def parse(cls, str):
+        rewards = {
+            "apple":   None,
+            "crash":   None,
+            "move":    None,
+            "rand":    None,
+            "initial": None
+        }
+
+        for line in str.splitlines():
+            line = re.sub(r"#.*", "", line).strip()
+            if line == "":
+                continue
+            match = re.fullmatch(r"(\w+)\s*:\s*([+-]?[0-9]+(?:\.[0-9]*)?)", line)
+            if not match:
+                raise(ValueError("Could not parse: " + line))
+            key, value = match.groups()
+            if key not in rewards:
+                raise(ValueError("Unknown key: " + key))
+            if rewards[key] is not None:
+                raise(ValueError("Multiple key: " + key))
+            rewards[key] = TYPE_FLOAT(value)
+        missing = [key for key in rewards if rewards[key] is None]
+        if missing:
+            raise(ValueError("Missing key: " + ", ".join(missing)))
+        return cls(**rewards)
+
+
+    @classmethod
+    def default(cls):
+        return cls.parse("""
+		apple:   1
+		crash: -10
+		# A small penalty for taking too long to get to an apple
+		move:   -0.001
+		# Small random disturbance to escape from loops
+		rand:    0.001
+		# Prefill with 0 is enough to encourage some early exploration
+		# since we have a negative reward for moving
+		initial: 0
+        """)
 
 
 @dataclass
@@ -491,14 +552,17 @@ class Snakes:
     def __init__(self, nr_snakes=1,
                  width     = 40,
                  height    = 40,
+                 channels  = 1,
                  history   = 0,
                  history_pit = False,
+                 point_image = False,
                  view_x = None, view_y = None,
                  debug = False, xy_apple = True, xy_head = True):
         if nr_snakes <= 0:
             raise(ValueError("Number of snakes must be positive"))
 
         self.debug = debug
+        self._channels = channels
         # Do we keep a cache of apple coordinates ?
         # This helps if e.g. we need the coordinates on every move decission
         self._xy_apple = xy_apple
@@ -566,29 +630,11 @@ class Snakes:
         self._all0 = all0.flatten()
         # self.print_pos("All", self._all0)
 
-        # empty_pit is just the edges with a permanently empty playing field
-        self._pit_empty = np.ones((self.HEIGHT1, self.WIDTH1), dtype=TYPE_FLAG)
-        self._pit_empty[self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH] = 0
-        # Easy way to check if a position is inside the pit
-        self._pit_flag = np.logical_not(self._pit_empty)
-        # self._field1 = np.ones((nr_snakes, self.HEIGHT1, self.WIDTH1), dtype=TYPE_FLAG)
-
-        # The playing field starts out as nr_snakes copies of the empty pit
-        # Notice that we store in row major order, so use field[snake,y,x]
-        # (This makes interpreting printouts a lot easier)
-        self._field1 = self._pit_empty.reshape(1,self.HEIGHT1,self.WIDTH1).repeat(nr_snakes, axis=0)
-        self._field0 = self._field1[:, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH]
-        assert self._field0.base is self._field1
-        self._field = self._field1.reshape(nr_snakes, self.HEIGHT1*self.WIDTH1)
-        assert self._field.base is self._field1
-
-        # self._apple_pit = np.zero((self.HEIGHT, self.WIDTH, self.HEIGHT, self.WIDTH),
-
-        self._snake_body = np_empty((nr_snakes, self.AREA2), TYPE_POS)
-
         # Body length measures the snake *without* the head
         # This is therefore also the score (if we start with length 0 snakes)
         self._body_length = np_empty(nr_snakes, TYPE_INDEX)
+        self._snake_body  = np_empty((nr_snakes, self.AREA2), TYPE_POS)
+
         # Don't need to pre-allocate _head.
         # run_start will implicitely create it
         self._apple = np_empty(nr_snakes, TYPE_POS)
@@ -599,23 +645,90 @@ class Snakes:
         self._nr_games_won = np_empty(nr_snakes, TYPE_GAMES)
         self._nr_games = np_empty(nr_snakes, TYPE_GAMES)
 
-        if history:
-            # 0: apple
-            # 1: score
-            # 2: game % HISTORY
-            # 3: final score
-            history_shape = (self.HISTORY, nr_snakes)
-            self._history_score       = np_empty(nr_snakes, dtype=TYPE_UPOS)
-            self._history_game0       = np_empty(nr_snakes, dtype=TYPE_GAMES)
-            self._history_score_final = np_empty(history_shape, dtype=TYPE_UPOS)
+        # empty_pit is just the edges with a permanently empty playing field
+        self._pit_empty = np.ones((self.HEIGHT1, self.WIDTH1), dtype=TYPE_FLAG)
+        self._pit_empty[self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH] = 0
+        # Easy way to check if a position is inside the pit
+        self._pit_flag = np.logical_not(self._pit_empty)
+        # self._field1 = np.ones((nr_snakes, self.HEIGHT1, self.WIDTH1), dtype=TYPE_FLAG)
 
-            if history_pit:
+        if channels == 1:
+            # The playing field starts out as nr_snakes copies of the empty pit
+            # Notice that we store in row major order, so use field[snake,y,x]
+            # (This makes interpreting printouts a lot easier)
+            base = self._pit_empty.reshape(1,self.HEIGHT1,self.WIDTH1).repeat(nr_snakes, axis=0)
+            self._field1 = base
+        else:
+            base = np.zeros((nr_snakes, self.HEIGHT1, self.WIDTH1, channels), dtype=TYPE_FLOAT)
+            self._deep_field = base
+            self._deep_field0 = self._deep_field[:, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH]
+            assert self._deep_field0.base is base
+            self._field1 = self._deep_field[:,:,:,0]
+            assert self._field1.base is base
+            self._field1[:] = self._pit_empty.astype(self._field1.dtype)
+            # print(self._deep_field)
+        self._field0 = self._field1[:, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH]
+        assert self._field0.base is base
+        self._field = self._field1.reshape(nr_snakes, self.HEIGHT1*self.WIDTH1)
+        assert self._field.base  is base
+
+        if history:
+            self.init_history()
+        if point_image:
+            self.init_point_image()
+
+
+    def init_history(self):
+        nr_snakes = self.nr_snakes
+        history_shape = (self.HISTORY, nr_snakes)
+        self._history_score       = np_empty(nr_snakes, dtype=TYPE_UPOS)
+        self._history_game0       = np_empty(nr_snakes, dtype=TYPE_GAMES)
+        self._history_score_final = np_empty(history_shape, dtype=TYPE_UPOS)
+
+        if self._history_pit:
+            if self._channels == 1:
                 self._history_apple0 = np_empty(nr_snakes, dtype=TYPE_UPOS)
-                self._history_field1 = self._field1.copy()
-                self._history_field0 = self._history_field1[:, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH]
-                assert self._history_field0.base is self._history_field1
-                self._history_field = self._history_field1.reshape(nr_snakes, self.HEIGHT1*self.WIDTH1)
-                assert self._field.base is self._field1
+                base = self._field1.copy()
+                self._history_field1 = base
+            else:
+                # Fill old apple positions so we can safely construct frame 0
+                # (at history later) by setting old apple positions to 0.
+                pos0 = self.pos_from_xy(0, 0)
+                self._history_apple0 = np.full(nr_snakes, pos0, dtype=TYPE_UPOS)
+                # Same with heads
+                self._snake_body[self._all_snakes, self.AREA2-1] = pos0
+
+                base = self._deep_field.copy()
+                self._deep_history_field = base
+                self._deep_history_field0 = self._deep_history_field[:, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH]
+                assert self._deep_history_field0.base is base
+                self._history_field1 = self._deep_history_field[:,:,:,0]
+                assert self._history_field1.base is base
+            self._history_field0 = self._history_field1[:, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH]
+            assert self._history_field0.base is base
+            self._history_field = self._history_field1.reshape(nr_snakes, self.HEIGHT1*self.WIDTH1)
+            assert self._history_field.base is base
+
+
+    def init_point_image(self):
+        self._point_base = np.zeros(2*self.AREA-1, dtype=TYPE_BOOL)
+        p = self.AREA-1
+        self._point_base[p] = True
+        size = self.pos_from_xy(self.WIDTH+self.VIEW_X-1,
+                                self.HEIGHT+self.VIEW_Y-1)+1
+        self._point_image = [None] * size
+        for y in range(self.HEIGHT):
+            pos = self.pos_from_yx(y+self.VIEW_Y, self.VIEW_X)
+            for x in range(self.WIDTH):
+                image = self._point_base[p:p+self.AREA].reshape(self.HEIGHT, self.WIDTH)
+                assert image.base is self._point_base
+                self._point_image[pos] = image
+                pos += 1
+                p -= 1
+
+
+    def point_image(self, pos):
+        return self._point_image[pos]
 
 
     def log_constants(self, log_action):
@@ -629,6 +742,48 @@ class Snakes:
         log_action("View X",      "%7d", self.VIEW_X)
         log_action("View_Y",      "%7d", self.VIEW_Y)
         log_action("History",     "%5d", self._history)
+
+
+    def log_frame(self, log_action, current):
+        current["score_total"]    = self.score_total_games()
+        current["nr_games_won"]   = self.nr_games_won_total()
+        current["nr_games_total"] = self.nr_games_total()
+        current["nr_moves_total"] = self.nr_moves_total_games()
+
+        log_action("Games Total", "%6d"    , current["nr_games_total"])
+        log_action("Games Won",   "%8d"    , self.nr_games_won_total())
+        log_action("Score Max",   "%8d"    , self.score_max())
+        log_action("L Score Max", "%6d"    , self.score_max_local())
+        log_action("Score Total", "%6d"    , current["score_total"])
+        log_action("Moves Max",   "%8d"    , self.nr_moves_max())
+        log_action("Moves total", "%6d"    , current["nr_moves_total"])
+        log_action("Moves/Game", "%11.3f"  , self.nr_moves_per_game())
+        log_action("Moves/Apple", "%10.3f" , self.nr_moves_per_apple())
+        log_action("Score/Game", "%11.3f"  , self.score_per_game())
+
+
+    def log_delta(self, log_action, delta):
+        if delta["nr_games_total"]:
+            log_action("L Score/Game", "%9.3f" ,
+                       delta["score_total"] / delta["nr_games_total"])
+            log_action("L Moves/Game", "%9.3f" ,
+                       delta["nr_moves_total"] / delta["nr_games_total"])
+
+        if delta["score_total"]:
+            log_action("L Moves/Apple", "%8.3f" ,
+                       delta["nr_moves_total"] / delta["score_total"])
+
+        if delta["frame"]:
+            log_action("L Games/Frame", "%8.3f",
+                       delta["nr_games_total"] / delta["frame"])
+            log_action("L Won/Frame", "%10.3f",
+                       delta["nr_games_won"] / delta["frame"])
+            log_action("L Score/Frame", "%8.3f",
+                       delta["score_total"] / delta["frame"])
+
+        if delta["nr_games_total"]:
+            log_action("L Won/Game", "%11.3f",
+                       delta["nr_games_won"] / delta["nr_games_total"])
 
 
     def dump_fh(self, fh):
