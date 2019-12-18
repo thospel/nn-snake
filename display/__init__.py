@@ -631,11 +631,11 @@ class Display:
         # Continue in run1()
         self._quit = False
         self.set_timer_step(0, self.run1)
+        self.timers_start()
 
 
     # Continuation of run(), but called from loop()
     def run1(self):
-        self.timers_start()
         self.log_start()
         self.log_tensor_board_start()
         # Loop in step() until event_quit sets it to run2()

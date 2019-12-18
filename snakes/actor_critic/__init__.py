@@ -1,4 +1,4 @@
-from snakes import Snakes, Rewards, TYPE_FLOAT, TYPE_BOOL
+from snakes import Snakes, Rewards, TYPE_FLOAT, TYPE_BOOL, CHANNELS, CHANNEL_BODY, CHANNEL_HEAD, CHANNEL_APPLE
 import numpy as np
 import tensorflow as tf
 import tensorflow.keras.layers as kl
@@ -13,6 +13,7 @@ def is_interactive():
 
 
 CONVOLUTION = False
+DEBUG_INPUT = False
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
@@ -37,29 +38,29 @@ class ProbabilityDistribution(tf.keras.Model):
 
 
 class ActorCriticModel(tf.keras.Model):
-    def __init__(self, num_actions, height, width):
+    def __init__(self, num_actions, height, width, data_format = "channels_last"):
         super().__init__('mlp_policy')
 
         self.dist = ProbabilityDistribution()
 
         # no tf.get_variable(), just simple Keras API
         if CONVOLUTION:
-            self.model_conv(height, width)
+            self.model_conv(height, width, data_format)
         else:
-            self.model_dense(height, width)
-        self.value = kl.Dense(1, name='value')
+            self.model_dense(height, width, data_format)
+        self.value = kl.Dense(1, kernel_regularizer=kr.l2(0.0001), name='value')
         # logits are unnormalized log probabilities
-        self.logits = kl.Dense(num_actions, name='policy_logits')
+        self.logits = kl.Dense(num_actions, kernel_regularizer=kr.l2(0.0001), name='policy_logits')
 
 
-    def model_conv(self, height, width):
+    def model_conv(self, height, width, data_format):
         self.conv1 = kl.Conv2D(filters = 3, kernel_size = 3,
                                activation='relu',
-                               # data_format = "channels_first",
+                               data_format = data_format,
                                input_shape=(height, width, 3))
         self.conv2 = kl.Conv2D(filters = 3, kernel_size = 3,
                                activation='relu',
-                               # data_format = "channels_first",
+                               data_format = data_format,
                                input_shape=(height, width, 3))
         self.pooling1 = kl.MaxPooling2D()
         self.pooling2 = kl.MaxPooling2D()
@@ -67,7 +68,16 @@ class ActorCriticModel(tf.keras.Model):
         self.flatten2 = kl.Flatten()
 
 
-    def model_dense(self, height, width):
+    def model_dense(self, height, width, data_format):
+        if data_format == "channels_first":
+            self.reshape = kl.Reshape((height*width*CHANNELS,),
+                                      input_shape = (CHANNELS, height, width))
+        elif data_format == "channels_last":
+            self.reshape = kl.Reshape((height*width*CHANNELS,),
+                                      input_shape = (height, width, CHANNELS))
+        else:
+            raise(ValueError("Unknown data_format:" + data_format))
+
         self.hidden1 = kl.Dense(128, activation='relu', kernel_regularizer=kr.l2(0.0001))
         self.hidden2 = kl.Dense(128, activation='relu', kernel_regularizer=kr.l2(0.0001))
 
@@ -78,8 +88,8 @@ class ActorCriticModel(tf.keras.Model):
         # print("Call Model", flush=True)
         # traceback.print_stack()
         # inputs is a numpy array, convert to Tensor
-        x = tf.convert_to_tensor(inputs, dtype=tf.float32)
-        # x = inputs
+        # x = tf.convert_to_tensor(inputs, dtype=tf.float32)
+        x = inputs
 
         if CONVOLUTION:
             # separate hidden layers from the same input tensor
@@ -93,6 +103,7 @@ class ActorCriticModel(tf.keras.Model):
         else:
             # logs = self.hidden1(x)
             # vals = self.hidden2(x)
+            x = self.reshape(x)
             x = self.hidden1(x)
             x = self.hidden2(x)
             logs = x
@@ -109,6 +120,8 @@ class ActorCriticModel(tf.keras.Model):
         # This may be https://github.com/keras-team/keras/issues/13118
         # And https://github.com/tensorflow/tensorflow/issues/33030
         # So this is possibly fixed in 2.1.0
+        # Notice that predict_on_batch returns tensorflow arrays where
+        # predict returns numpy arrays
         # executes call() under the hood (on the first invocation)
         logits, value = self.predict_on_batch(obs)
         # print("Logits:", logits)
@@ -121,7 +134,6 @@ class ActorCriticModel(tf.keras.Model):
         # graph execution since we can't call random on graphs, only on values
         # We can squeeze values since the last dense layer has a size of 1 unit
         return logits, action, np.squeeze(value, axis=-1)
-        # return action, value
 
 
 if is_interactive():
@@ -168,8 +180,9 @@ class SnakesA2C(Snakes):
                  xy_apple = False,
                  history_pit = True,
                  reward_file = None,
-                 point_image = True,
-                 channels = 1,
+                 point_image = False,
+                 # channels = 1,
+                 channels = CHANNELS,
                  learning_rate = 0.1,
                  discount      = 0.9,
                  entropy_beta  = 0.0001,
@@ -180,6 +193,11 @@ class SnakesA2C(Snakes):
         else:
             self._rewards = Rewards.parse_file(reward_file)
 
+        if DEBUG_INPUT:
+            channels = CHANNELS
+            point_image = True
+        if channels == 1:
+            point_image = True
         super().__init__(*args,
                          xy_head = xy_head,
                          xy_apple = xy_apple,
@@ -193,7 +211,11 @@ class SnakesA2C(Snakes):
         self._value_factor = 0.5
         self._entropy_beta = entropy_beta
         # self._eat_frame = np_empty(self.nr_snakes, TYPE_MOVES)
-        self._model = ActorCriticModel(4, width = self.WIDTH, height = self.HEIGHT)
+        self._model = ActorCriticModel(
+            4,
+            width = self.WIDTH,
+            height = self.HEIGHT,
+            data_format = "channels_last" if CONVOLUTION or channels > 1 else "channels_first")
         self._model.compile(
             # optimizer = ko.RMSprop(lr = self._learning_rate),
             optimizer = 'adam',
@@ -269,25 +291,34 @@ class SnakesA2C(Snakes):
         for i in range(0, self.nr_snakes, batch_size):
             i1 = min(i+batch_size, self.nr_snakes)
             r = range(i, i1)
-            input = [[self._field0[j],
-                      self._point_image[head[j]],
-                      self._point_image[apple[j]]] for j in r]
-            # input = tf.convert_to_tensor(input, dtype=tf.float32)
-            input = np.array(input, dtype=TYPE_FLOAT)
-            if CONVOLUTION:
-                # Move channels to the end
-                # Tensorflow CPU cannot handle channel first (GPU can)
-                channels = np.rollaxis(input, 1,4)
-                # print(channels.shape)
+            if self._channels == 1 or DEBUG_INPUT:
+                input = [[self._field0[j],
+                          self._point_image[apple[j]],
+                          self._point_image[head[j]]] for j in r]
+                # input = tf.convert_to_tensor(input, dtype=tf.float32)
+                input = np.array(input, dtype=TYPE_FLOAT)
+                if CONVOLUTION or DEBUG_INPUT:
+                    # Move channels to the end
+                    # Tensorflow CPU cannot handle channel first (GPU can)
+                    input = np.rollaxis(input, 1,4)
+                if DEBUG_INPUT:
+                    assert np.array_equal(input, self._deep_field0[i:i1])
             else:
-                channels = input.reshape(input.shape[0], -1)
-            assert channels.base is input
+                input = self._deep_field0[i:i1]
+            # print("NOW")
+            # print(input[self._debug_index,:,:,CHANNEL_BODY])
+            # print(input[self._debug_index,:,:,CHANNEL_HEAD])
+            # print(input[self._debug_index,:,:,CHANNEL_APPLE])
             # The returned values are of type numpy.ndarray
-            logits, actions, values = self._model.action_value(channels)
+            # Except logits which is of type tf.Tensor as long as
+            # action_value uses predict_on_batch() instead of predict()
+            logits, actions, values = self._model.action_value(input)
+            del input
+            # print(type(logits), type(actions), type(values))
             if debug and dii == i:
                 p = np.exp(logits[dj])/sum(np.exp(logits[dj]))
                 print("Logits", logits[dj], "p", p)
-            logits = None
+            del logits
             # print(actions, values)
             all_actions.append(actions)
             all_values.append(values)
@@ -314,8 +345,10 @@ class SnakesA2C(Snakes):
             old_action = self._old_action[h0]
 
             if debug:
-                print("Cur Value = %f, Old Value = %f, Old Action = %d" %
-                      (all_values[self._debug_index], self._old_values[h0][self._debug_index], old_action[di][dj]))
+                print("Old Action = %d, Old Value = %f, New Value = %f" %
+                      (old_action[di][dj],
+                       self._old_values[h0][self._debug_index],
+                       all_values[self._debug_index]))
                 print("Reward = %f, Advantage = %f (Old Game = %d, New Game = %d)" %
                       (rewards[self._debug_index],
                        advantage[self._debug_index],
@@ -327,19 +360,24 @@ class SnakesA2C(Snakes):
             for i in range(0, self.nr_snakes, batch_size):
                 i1 = min(i+batch_size, self.nr_snakes)
                 r = range(i, i1)
-                input = [[self._history_field0[j],
-                          self._point_image[old_head[j]],
-                          self._point_image[old_apple[j]]] for j in r]
-                # input = tf.convert_to_tensor(input, dtype=tf.float32)
-                input = np.array(input, dtype=TYPE_FLOAT)
-                if CONVOLUTION:
-                    # Move channels to the end
-                    # Tensorflow CPU cannot handle channel first (GPU can)
-                    channels = np.rollaxis(input, 1,4)
-                    # print(channels.shape)
+                if self._channels == 1 or DEBUG_INPUT:
+                    input = [[self._history_field0[j],
+                              self._point_image[old_apple[j]],
+                              self._point_image[old_head[j]]] for j in r]
+                    # input = tf.convert_to_tensor(input, dtype=tf.float32)
+                    input = np.array(input, dtype=TYPE_FLOAT)
+                    if CONVOLUTION or DEBUG_INPUT:
+                        # Move channels to the end
+                        # Tensorflow CPU cannot handle channel first (GPU can)
+                        input = np.rollaxis(input, 1,4)
+                    if DEBUG_INPUT:
+                        assert np.array_equal(input, self._deep_history_field0[i:i1])
                 else:
-                    channels = input.reshape(input.shape[0], -1)
-                assert channels.base is input
+                    input = self._deep_history_field0[i:i1]
+                # print("THEN")
+                # print(input[self._debug_index,:,:,CHANNEL_BODY])
+                # print(input[self._debug_index,:,:,CHANNEL_HEAD])
+                # print(input[self._debug_index,:,:,CHANNEL_APPLE])
                 # print(self._model.metrics_names)
                 # print(channels.shape)
                 # print(old_action[i//batch_size].shape)
@@ -350,8 +388,10 @@ class SnakesA2C(Snakes):
                 # samples, so each shape should start with batch
                 action_advantage = np.stack((old_action[i//batch_size], advantage[i:i1]), axis=1)
                 loss = self._model.train_on_batch(
-                    channels,
+                    input,
                     [action_advantage, rewards[i:i1]])
+                del input
+                del action_advantage
                 assert len(loss) == 3
                 # 0: total loss (output_1_loss + output_2_loss)
                 # 1: output_1_loss
@@ -367,6 +407,6 @@ class SnakesA2C(Snakes):
         self._old_action[h] = all_actions
         self._old_values[h] = all_values
         if debug:
-            print("Value = %f, action = %d" % (all_values[self._debug_index], all_actions[di][dj]))
+            print("New Value = %f, New Action = %d" % (all_values[self._debug_index], all_actions[di][dj]))
         pos = head + self.DIRECTIONS[np.concatenate(all_actions, axis=None)]
         return pos

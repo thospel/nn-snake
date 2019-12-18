@@ -26,6 +26,10 @@ TYPE_GAMES = np.uint32
 TYPE_SNAKE = np.uint32
 TYPE_FLOAT = np.float32
 
+CHANNEL_BODY  = 0
+CHANNEL_APPLE = 1
+CHANNEL_HEAD  = 2
+CHANNELS = 3
 
 def script():
     try:
@@ -659,16 +663,28 @@ class Snakes:
             base = self._pit_empty.reshape(1,self.HEIGHT1,self.WIDTH1).repeat(nr_snakes, axis=0)
             self._field1 = base
         else:
+            # With edges as a rectangle
             base = np.zeros((nr_snakes, self.HEIGHT1, self.WIDTH1, channels), dtype=TYPE_FLOAT)
-            self._deep_field = base
-            self._deep_field0 = self._deep_field[:, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH]
+            self._deep_field1 = base
+
+            # With edges, as a linear array
+            self._deep_field = base.reshape(nr_snakes, self.HEIGHT1*self.WIDTH1, -1)
+            assert self._deep_field.base is base
+
+            # Without edges, a rectangle
+            self._deep_field0 = base[:, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH]
             assert self._deep_field0.base is base
-            self._field1 = self._deep_field[:,:,:,0]
+
+            # Just the body (with edges, as a rectangle)
+            self._field1 = base[:,:,:,CHANNEL_BODY]
             assert self._field1.base is base
             self._field1[:] = self._pit_empty.astype(self._field1.dtype)
             # print(self._deep_field)
+        # The body (without edges, as a rectangle)
         self._field0 = self._field1[:, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH]
         assert self._field0.base is base
+
+        # The body (with edges, as a linear array)
         self._field = self._field1.reshape(nr_snakes, self.HEIGHT1*self.WIDTH1)
         assert self._field.base  is base
 
@@ -681,31 +697,37 @@ class Snakes:
     def init_history(self):
         nr_snakes = self.nr_snakes
         history_shape = (self.HISTORY, nr_snakes)
+        self._history_apple0      = np_empty(nr_snakes, dtype=TYPE_UPOS)
         self._history_score       = np_empty(nr_snakes, dtype=TYPE_UPOS)
         self._history_game0       = np_empty(nr_snakes, dtype=TYPE_GAMES)
         self._history_score_final = np_empty(history_shape, dtype=TYPE_UPOS)
 
         if self._history_pit:
             if self._channels == 1:
-                self._history_apple0 = np_empty(nr_snakes, dtype=TYPE_UPOS)
+                # The body (with edges, as a rectangle)
                 base = self._field1.copy()
                 self._history_field1 = base
             else:
-                # Fill old apple positions so we can safely construct frame 0
-                # (at history later) by setting old apple positions to 0.
-                pos0 = self.pos_from_xy(0, 0)
-                self._history_apple0 = np.full(nr_snakes, pos0, dtype=TYPE_UPOS)
-                # Same with heads
-                self._snake_body[self._all_snakes, self.AREA2-1] = pos0
+                # With edges as a rectangle
+                base = self._deep_field1.copy()
+                self._deep_history_field1 = base
 
-                base = self._deep_field.copy()
-                self._deep_history_field = base
-                self._deep_history_field0 = self._deep_history_field[:, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH]
+                # With edges, as a linear array
+                self._deep_history_field = base.reshape(nr_snakes, self.HEIGHT1*self.WIDTH1, -1)
+                assert self._deep_history_field.base is base
+
+                # Without edges, a rectangle
+                self._deep_history_field0 = base[:, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH]
                 assert self._deep_history_field0.base is base
-                self._history_field1 = self._deep_history_field[:,:,:,0]
+
+                # Just the body (with edges, as a rectangle)
+                self._history_field1 = base[:,:,:,0]
                 assert self._history_field1.base is base
+            # The body (without edges, as a rectangle)
             self._history_field0 = self._history_field1[:, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH]
             assert self._history_field0.base is base
+
+            # The body (with edges, as a linear array)
             self._history_field = self._history_field1.reshape(nr_snakes, self.HEIGHT1*self.WIDTH1)
             assert self._history_field.base is base
 
@@ -916,6 +938,9 @@ class Snakes:
 
 
     def head_set(self, head_new):
+        if self._channels > 1:
+            self._deep_field[self._all_snakes, self._head, CHANNEL_HEAD] = 0
+            self._deep_field[self._all_snakes, head_new,   CHANNEL_HEAD] = 1
         self._head = head_new
         offset = self._cur_move & self.MASK
         self._snake_body[self._all_snakes, offset] = head_new
@@ -956,7 +981,7 @@ class Snakes:
         apple_y, apple_x = self.yx0(self.apple()[shape])
         head_y,  head_x  = self.yx0(self.head ()[shape])
         if self._history_pit:
-            if self._history_head0 is not None:
+            if self._history_result0 is not None:
                 h_apple_y, h_apple_x = self.yx0(self._history_apple0[shape])
                 h_head_y,  h_head_x  = self.yx0(self._history_head0 [shape])
             per_column = 2
@@ -983,7 +1008,7 @@ class Snakes:
                             h_y = head_y
                             a_x = apple_x
                             a_y = apple_y
-                        elif self._history_head0 is not None:
+                        elif self._history_result0 is not None:
                             field = self._history_field0[i]
                             h_x = h_head_x
                             h_y = h_head_y
@@ -1046,6 +1071,10 @@ class Snakes:
         # print("New apples", todo.size)
         # print("New apples", todo)
         # old_todo = todo.copy()
+
+        if self._channels > 1:
+            self._deep_field[todo, self._apple[todo], CHANNEL_APPLE] = 0
+
         # Simple retry strategy. Will get slow once a snake grows very large
         old_todo = todo
         while todo.size:
@@ -1063,6 +1092,8 @@ class Snakes:
             # print("Still need", todo.size)
         if self._xy_apple:
             self._apple_y[old_todo], self._apple_x[old_todo] = self.yx(self._apple[old_todo])
+        if self._channels > 1:
+            self._deep_field[old_todo, self._apple[old_todo], CHANNEL_APPLE] = 1
         # self.print_pos("Placed apples", self._apple[old_todo])
 
 
@@ -1262,8 +1293,15 @@ class Snakes:
             collided = self._history_result0.collided
             self._history_score[eaten] += 1
             if self._history_pit:
+                if self._channels > 1:
+                    self._deep_history_field[self._all_snakes, self._history_head0, CHANNEL_HEAD] = 0
+                    self._deep_history_field[eaten, self._history_apple0[eaten], CHANNEL_APPLE] = 0
                 self._history_apple0[eaten] = self._history_apple[h0]
                 self._history_head0 = self._snake_body[self._all_snakes, frame0]
+                if self._channels > 1:
+                    self._deep_history_field[self._all_snakes, self._history_head0, CHANNEL_HEAD] = 1
+                    self._deep_history_field[eaten, self._history_apple0[eaten], CHANNEL_APPLE] = 1
+
                 # At frame0 == 0 this fetches nonsense tail values from
                 # _snake_body. However the next line immediately replaces all
                 # these values
@@ -1474,6 +1512,12 @@ class Snakes:
         self._body_length.fill(0)
         self._nr_moves.fill(self._cur_move)
 
+        if self._channels > 1:
+            pos0 = self.pos_from_xy(0, 0)
+            self._apple.fill(pos0)
+            # Sharing is good enough, the head_set() below will set a new value
+            self._head = self._apple
+
         # print("Initial heads")
         if self._xy_head:
             self._head_x = self.rand_x(self.nr_snakes)
@@ -1489,7 +1533,15 @@ class Snakes:
             self._history_result  = [None] * self.HISTORY
             self._history_game    = [None] * self.HISTORY
             if self._history_pit:
-                self._history_head0 = None
+                if self._channels == 1:
+                    self._history_head0 = None
+                else:
+                    # Prefill history_apple0 so we can safely construct frame 0
+                    # (at history later) when clearing old apple positions
+                    pos0 = self.pos_from_xy(0, 0)
+                    self._history_apple0.fill(pos0)
+                    # Same with heads
+                    self._history_head0 = self._history_apple0.copy()
                 self._history_apple = [None] * self.HISTORY
 
         # Pass w_head instead of head so we do self.yx only where needed

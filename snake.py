@@ -43,8 +43,8 @@ Usage:
            [--frames=<frames>] [--games=<games>] [--dump=<file>]
            [--columns=columns] [--rows=rows] [--block=<block_size>] [--pygame]
            [--log-period=<period>] [--log=<log>] [--tensor-board=<dir>]
-            [--reward-file=<file>] [--learning-rate=<r>] [--discount <ratio>]
-           [--history=<history>] [--entropy-beta=<beta>]
+           [--reward-file=<file>] [--learning-rate=<r>] [--discount <ratio>]
+           [--history=<history>] [--entropy-beta=<beta>] [--save-memory]
   snake.py benchmark
   snake.py -f <file>
   snake.py (-h | --help)
@@ -104,6 +104,8 @@ Options:
                           (the historic layout is shown during debug)
   --entropy-beta=<beta>   Fraction for entropy bonus to the loss function
                           [Default: 0.0001]
+  --save-memory           Use a more compact representation of the snake pit
+                          at the cost of having to build the input to tensorflow
   -f <file>:              Used by jupyter, ignored
 
 Key actions:
@@ -207,6 +209,7 @@ elif arguments["a2c"]:
     snake_kwargs["learning_rate"] = float(arguments["--learning-rate"])
     snake_kwargs["discount"]      = float(arguments["--discount"])
     snake_kwargs["entropy_beta"]  = float(arguments["--entropy-beta"])
+    snake_kwargs["channels"]      = 1 if arguments["--save-memory"] else 3
 else:
     raise(AssertionError("Unspecified snake type"))
 
