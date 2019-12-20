@@ -15,6 +15,7 @@ def is_interactive():
 
 CONVOLUTION = False
 DEBUG_INPUT = False
+DEBUG_INPUT_PRINT = False
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
@@ -306,10 +307,11 @@ class SnakesA2C(Snakes):
                     assert np.array_equal(input, self._deep_field0[i:i1])
             else:
                 input = self._deep_field0[i:i1]
-            # print("NOW")
-            # print(input[self._debug_index,:,:,CHANNEL_BODY])
-            # print(input[self._debug_index,:,:,CHANNEL_HEAD])
-            # print(input[self._debug_index,:,:,CHANNEL_APPLE])
+            if DEBUG_INPUT_PRINT:
+                print("NOW")
+                print(input[self._debug_index,:,:,CHANNEL_BODY])
+                print(input[self._debug_index,:,:,CHANNEL_HEAD])
+                print(input[self._debug_index,:,:,CHANNEL_APPLE])
             # The returned values are of type numpy.ndarray
             # Except logits which is of type tf.Tensor as long as
             # action_value uses predict_on_batch() instead of predict()
@@ -376,10 +378,11 @@ class SnakesA2C(Snakes):
                         assert np.array_equal(input, self._deep_history_field0[i:i1])
                 else:
                     input = self._deep_history_field0[i:i1]
-                # print("THEN")
-                # print(input[self._debug_index,:,:,CHANNEL_BODY])
-                # print(input[self._debug_index,:,:,CHANNEL_HEAD])
-                # print(input[self._debug_index,:,:,CHANNEL_APPLE])
+                if DEBUG_INPUT_PRINT:
+                    print("THEN")
+                    print(input[self._debug_index,:,:,CHANNEL_BODY])
+                    print(input[self._debug_index,:,:,CHANNEL_HEAD])
+                    print(input[self._debug_index,:,:,CHANNEL_APPLE])
                 # print(self._model.metrics_names)
                 # print(channels.shape)
                 # print(old_action[i//batch_size].shape)

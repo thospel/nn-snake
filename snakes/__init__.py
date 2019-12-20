@@ -30,6 +30,9 @@ CHANNEL_BODY  = 0
 CHANNEL_APPLE = 1
 CHANNEL_HEAD  = 2
 CHANNELS = 3
+# Image is a field of IMAGE_CLEAR with the selected position IMAGE_SET
+IMAGE_SET   = 0
+IMAGE_CLEAR = 1
 
 def script():
     try:
@@ -668,7 +671,7 @@ class Snakes:
             self._field1 = base
         else:
             # With edges as a rectangle
-            base = np.zeros((nr_snakes, self.HEIGHT1, self.WIDTH1, channels), dtype=TYPE_FLOAT)
+            base = np.full((nr_snakes, self.HEIGHT1, self.WIDTH1, channels), IMAGE_CLEAR, dtype=TYPE_FLOAT)
             self._deep_field1 = base
 
             # With edges, as a linear array
@@ -737,9 +740,9 @@ class Snakes:
 
 
     def init_point_image(self):
-        self._point_base = np.zeros(2*self.AREA-1, dtype=TYPE_BOOL)
+        self._point_base = np.full(2*self.AREA-1, IMAGE_CLEAR, dtype=TYPE_BOOL)
         p = self.AREA-1
-        self._point_base[p] = True
+        self._point_base[p] = IMAGE_SET
         size = self.pos_from_xy(self.WIDTH+self.VIEW_X-1,
                                 self.HEIGHT+self.VIEW_Y-1)+1
         self._point_image = [None] * size
@@ -943,8 +946,8 @@ class Snakes:
 
     def head_set(self, head_new):
         if self._channels > 1:
-            self._deep_field[self._all_snakes, self._head, CHANNEL_HEAD] = 0
-            self._deep_field[self._all_snakes, head_new,   CHANNEL_HEAD] = 1
+            self._deep_field[self._all_snakes, self._head, CHANNEL_HEAD] = IMAGE_CLEAR
+            self._deep_field[self._all_snakes, head_new,   CHANNEL_HEAD] = IMAGE_SET
         self._head = head_new
         offset = self._cur_move & self.MASK
         self._snake_body[self._all_snakes, offset] = head_new
@@ -1077,7 +1080,7 @@ class Snakes:
         # old_todo = todo.copy()
 
         if self._channels > 1:
-            self._deep_field[todo, self._apple[todo], CHANNEL_APPLE] = 0
+            self._deep_field[todo, self._apple[todo], CHANNEL_APPLE] = IMAGE_CLEAR
 
         # Simple retry strategy. Will get slow once a snake grows very large
         old_todo = todo
@@ -1097,7 +1100,7 @@ class Snakes:
         if self._xy_apple:
             self._apple_y[old_todo], self._apple_x[old_todo] = self.yx(self._apple[old_todo])
         if self._channels > 1:
-            self._deep_field[old_todo, self._apple[old_todo], CHANNEL_APPLE] = 1
+            self._deep_field[old_todo, self._apple[old_todo], CHANNEL_APPLE] = IMAGE_SET
         # self.print_pos("Placed apples", self._apple[old_todo])
 
 
@@ -1298,13 +1301,13 @@ class Snakes:
             self._history_score[eaten] += 1
             if self._history_pit:
                 if self._history_channels > 1:
-                    self._deep_history_field[self._all_snakes, self._history_head0, CHANNEL_HEAD] = 0
-                    self._deep_history_field[eaten, self._history_apple0[eaten], CHANNEL_APPLE] = 0
+                    self._deep_history_field[self._all_snakes, self._history_head0, CHANNEL_HEAD] = IMAGE_CLEAR
+                    self._deep_history_field[eaten, self._history_apple0[eaten], CHANNEL_APPLE] = IMAGE_CLEAR
                 self._history_apple0[eaten] = self._history_apple[h0]
                 self._history_head0 = self._snake_body[self._all_snakes, frame0]
                 if self._history_channels > 1:
-                    self._deep_history_field[self._all_snakes, self._history_head0, CHANNEL_HEAD] = 1
-                    self._deep_history_field[eaten, self._history_apple0[eaten], CHANNEL_APPLE] = 1
+                    self._deep_history_field[self._all_snakes, self._history_head0, CHANNEL_HEAD] = IMAGE_SET
+                    self._deep_history_field[eaten, self._history_apple0[eaten], CHANNEL_APPLE] = IMAGE_SET
 
                 # At frame0 == 0 this fetches nonsense tail values from
                 # _snake_body. However the next line immediately replaces all
