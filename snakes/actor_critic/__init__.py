@@ -1,4 +1,4 @@
-from snakes import Snakes, Rewards, TYPE_FLOAT, TYPE_BOOL, CHANNELS, CHANNEL_BODY, CHANNEL_HEAD, CHANNEL_APPLE
+from snakes import Snakes, Rewards, TYPE_FLOAT, TYPE_BOOL, CHANNELS, CHANNEL_BODY, CHANNEL_HEAD, CHANNEL_APPLE, CHANNEL_TAIL
 import numpy as np
 import math
 import tensorflow as tf
@@ -16,6 +16,9 @@ def is_interactive():
 CONVOLUTION = False
 DEBUG_INPUT = False
 DEBUG_INPUT_PRINT = False
+DEBUG_TRAIN = False
+BUGGY = False
+NORMALIZE = False
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
@@ -56,25 +59,32 @@ class ActorCriticModel(tf.keras.Model):
 
 
     def model_conv(self, height, width):
-        self.conv1 = kl.Conv2D(filters = 3, kernel_size = 3,
+        self.conv1 = kl.Conv2D(filters = 8, kernel_size = 3,
+                               padding = "same",
                                activation='relu',
+                               kernel_regularizer=kr.l2(0.0001),
                                data_format = "channels_last",
                                input_shape=(height, width, 3))
         self.conv2 = kl.Conv2D(filters = 3, kernel_size = 3,
+                               padding = "same",
                                activation='relu',
-                               data_format = "channels_last",
-                               input_shape=(height, width, 3))
-        self.pooling1 = kl.MaxPooling2D()
-        self.pooling2 = kl.MaxPooling2D()
-        self.flatten1 = kl.Flatten()
-        self.flatten2 = kl.Flatten()
+                               kernel_regularizer=kr.l2(0.0001),
+                               data_format = "channels_last")
+        # self.pooling1 = kl.MaxPooling2D()
+        # self.pooling2 = kl.MaxPooling2D()
+        self.flatten = kl.Flatten()
+        # self.flatten2 = kl.Flatten()
 
 
     def model_dense(self, height, width):
         self.reshape = kl.Reshape((height*width*CHANNELS,),
                                   input_shape = (height, width, CHANNELS))
-        self.hidden1 = kl.Dense(128, activation='relu', kernel_regularizer=kr.l2(0.0001))
-        self.hidden2 = kl.Dense(128, activation='relu', kernel_regularizer=kr.l2(0.0001))
+        self.hidden1 = kl.Dense(128,
+                                activation='relu',
+                                kernel_regularizer=kr.l2(0.0001))
+        self.hidden2 = kl.Dense(128,
+                                activation='relu',
+                                kernel_regularizer=kr.l2(0.0001))
 
 
     # Typically gets called only once (on first evaluation)
@@ -88,13 +98,11 @@ class ActorCriticModel(tf.keras.Model):
 
         if CONVOLUTION:
             # separate hidden layers from the same input tensor
-            logs = self.conv1(x)
-            logs = self.pooling1(logs)
-            logs = self.flatten1(logs)
-
-            vals = self.conv2(x)
-            vals = self.pooling2(vals)
-            vals = self.flatten2(vals)
+            x = self.conv1(x)
+            x = self.conv2(x)
+            x = self.flatten(x)
+            logs = x
+            vals = x
         else:
             # logs = self.hidden1(x)
             # vals = self.hidden2(x)
@@ -180,9 +188,12 @@ class SnakesA2C(Snakes):
                  # history_channels = 1,
                  channels = CHANNELS,
                  history_channels = CHANNELS,
+                 single        = False,
                  learning_rate = 0.1,
                  discount      = 0.9,
-                 entropy_beta  = 0.0001,
+                 entropy_beta  = 0.01,
+                 value_weight  = 0.5,
+                 switch_period = 40,
                  **kwargs):
 
         if reward_file is None:
@@ -209,55 +220,89 @@ class SnakesA2C(Snakes):
         # Compensate for that if we won
         self._win_bonus += math.ceil(-self._rewards.crash / self._rewards.apple)
 
+        self._single = single
         self._learning_rate = TYPE_FLOAT(learning_rate)
+        if not self._single:
+            self._learning_rate /= self.nr_snakes
         self._discount = TYPE_FLOAT(discount)
-        self._value_factor = 0.5
+        self._value_weight = value_weight
         self._entropy_beta = entropy_beta
+        self._switch_period = switch_period
         # self._eat_frame = np_empty(self.nr_snakes, TYPE_MOVES)
-        self._model = ActorCriticModel(
+        self._model_run = ActorCriticModel(
             4,
-            width = self.WIDTH,
+            width  = self.WIDTH,
             height = self.HEIGHT)
-        self._model.compile(
+        self._model_run.compile(
             # optimizer = ko.RMSprop(lr = self._learning_rate),
-            optimizer = 'adam',
+            optimizer = ko.Adam(lr = self._learning_rate),
             # define separate losses for policy logits and value estimate
             loss = [self.loss_logits, self.loss_value])
-        print("Eager model:", self._model.run_eagerly)
+        # self._model_train = ActorCriticModel(
+        #    4,
+        #    width = self.WIDTH,
+        #    height = self.HEIGHT)
+        #self._model_train.compile(
+        #    # optimizer = ko.RMSprop(lr = self._learning_rate),
+        #    optimizer = 'adam',
+        #    # define separate losses for policy logits and value estimate
+        #    loss = [self.loss_logits, self.loss_value])
+        self._model_train = self._model_run
+        print("Eager model:", self._model_run.run_eagerly)
         print("Eager TF:", tf.executing_eagerly())
 
 
     @tf.function
     def loss_logits(self, actions_advantages, logits):
-        # print("Logits_loss", type(actions_advantages), type(logits), flush=True)
+        # print("Logits_loss", actions_advantages, logits)
         # traceback.print_stack()
         # a trick to input actions and advantages through same API
         actions, advantages = tf.split(actions_advantages, 2, axis=-1)
+        # print("Actions", actions, "Advantages", advantages)
+        # print("Logits", logits)
         # sparse categorical CE loss obj that supports sample_weight arg on
         # call() from_logits argument ensures transformation into normalized
         # probabilities
+        # SparseCategoricalCrossentropy(a,b) = CategoricalCrossentropy(one_hot(a), b) / num_actions
         weighted_sparse_ce = kls.SparseCategoricalCrossentropy(from_logits=True)
         # policy loss is defined by policy gradients, weighted by advantages
         # note: we only calculate the loss on the actions we've actually taken
         policy_loss = weighted_sparse_ce(actions, logits, sample_weight=advantages)
-        # entropy loss can be calculated via CE over itself
-        entropy_loss = kls.categorical_crossentropy(logits, logits, from_logits=True)
+        if BUGGY:
+            entropy_loss = kls.categorical_crossentropy(logits, logits, from_logits=True)
+        else:
+            # print("Policy loss", policy_loss)
+            # entropy loss can be calculated via CE over itself
+            probabilities = tf.nn.softmax(logits)
+            entropy_loss = kls.categorical_crossentropy(probabilities, probabilities)
+        # print("Entropy loss", entropy_loss)
         # here signs are flipped because optimizer minimizes
         return policy_loss - self._entropy_beta * entropy_loss
 
 
     @tf.function
     def loss_value(self, rewards, value):
-        # print("Value_loss", type(rewards), type(value))
+        # print("Value_loss", rewards, value)
         # traceback.print_stack()
-        # value loss is typically MSE between value estimates and returns
-        return self._value_factor * kls.mean_squared_error(rewards, value)
+        # value loss is typically MSE between rewards and value estimates
+        return self._value_weight * kls.mean_squared_error(rewards, value)
 
 
     def log_constants(self, log_action):
         super().log_constants(log_action)
-        log_action("ValueAlpha",  "%11.3f"  , self._value_factor)
+
+        lr = self._learning_rate
+        if not self._single:
+            lr *= self.nr_snakes
+
+        log_action("Learning Rate", "%8.3f",  lr)
+        log_action("ValueAlpha",  "%11.3f"  , self._value_weight)
         log_action("EntropyBeta", "%10.3f"  , self._entropy_beta)
+        log_action("Reward apple",  "%9.3f",  self._rewards.apple)
+        log_action("Reward crash",  "%9.3f",  self._rewards.crash)
+        log_action("Reward move",   "%10.3f", self._rewards.move)
+        log_action("Reward rand",   "%10.3f", self._rewards.rand)
+        log_action("Reward init",   "%10.3f", self._rewards.initial)
 
 
     def log_frame(self, log_action, current):
@@ -266,6 +311,27 @@ class SnakesA2C(Snakes):
             log_action("Loss/Total",  "%11.3f", self._loss[0])
             log_action("Loss/Logits", "%10.3f", self._loss[1])
             log_action("Loss/Value",  "%11.3f", self._loss[2])
+
+    def input_equal(self, offset, constructed, deep):
+        if np.array_equal(constructed, deep):
+            return
+        if constructed.shape != deep.shape:
+            raise(AssertionError("Constructed and deep input shapes differ"))
+        for i in range(deep.shape[0]):
+            if np.array_equal(constructed[i], deep[i]):
+                continue
+            print("CONSTRUCTED")
+            print(constructed[i,:,:,CHANNEL_BODY].astype(np.int8))
+            print(constructed[i,:,:,CHANNEL_HEAD].astype(np.int8))
+            print(constructed[i,:,:,CHANNEL_TAIL].astype(np.int8))
+            print(constructed[i,:,:,CHANNEL_APPLE].astype(np.int8))
+            print("DEEP")
+            print(deep[i,:,:,CHANNEL_BODY].astype(np.int8))
+            print(deep[i,:,:,CHANNEL_HEAD].astype(np.int8))
+            print(deep[i,:,:,CHANNEL_TAIL].astype(np.int8))
+            print(deep[i,:,:,CHANNEL_APPLE].astype(np.int8))
+            raise(AssertionError("Constructed and deep input differ"))
+        raise(AssertionError("Constructed and deep input differ, but I can't find the difference"))
 
 
     def run_start(self, display):
@@ -279,8 +345,12 @@ class SnakesA2C(Snakes):
     def move_select(self, move_result, display):
         debug = self.debug
 
+        if False and self.frame() % self._switch_period == 0:
+            self._model_run, self._model_train = self._model_train, self._model_run
         head  = self.head()
-        apple = self.apple()
+        if self._channels == 1 or DEBUG_INPUT:
+            apple = self.apple()
+            tail  = self.tail()
 
         h  = self.frame_history_now()
         h0 = self.frame_history_then()
@@ -296,26 +366,29 @@ class SnakesA2C(Snakes):
             if self._channels == 1 or DEBUG_INPUT:
                 input = [[self._field0[j],
                           self._point_image[apple[j]],
-                          self._point_image[head[j]]] for j in r]
+                          self._point_image[head[j]],
+                          self._point_image[tail[j]]
+                ] for j in r]
                 input = np.array(input, dtype=TYPE_FLOAT)
+                # Tensorflow CPU cannot handle channel first (GPU can)
                 # Move channels to the end (this doesn't copy)
                 # (of course it will slow down the copy to tensor)
-                # Tensorflow CPU cannot handle channel first (GPU can)
                 input = np.rollaxis(input, 1,4)
                 # input = tf.convert_to_tensor(input, dtype=tf.float32)
                 if DEBUG_INPUT:
-                    assert np.array_equal(input, self._deep_field0[i:i1])
+                    self.input_equal(i, input, self._deep_field0[i:i1])
             else:
                 input = self._deep_field0[i:i1]
-            if DEBUG_INPUT_PRINT:
+            if DEBUG_INPUT_PRINT and dii == i:
                 print("NOW")
-                print(input[self._debug_index,:,:,CHANNEL_BODY])
-                print(input[self._debug_index,:,:,CHANNEL_HEAD])
-                print(input[self._debug_index,:,:,CHANNEL_APPLE])
+                print(input[dj,:,:,CHANNEL_BODY].astype(np.int8))
+                print(input[dj,:,:,CHANNEL_HEAD].astype(np.int8))
+                print(input[dj,:,:,CHANNEL_TAIL].astype(np.int8))
+                print(input[dj,:,:,CHANNEL_APPLE].astype(np.int8))
             # The returned values are of type numpy.ndarray
             # Except logits which is of type tf.Tensor as long as
             # action_value uses predict_on_batch() instead of predict()
-            logits, actions, values = self._model.action_value(input)
+            logits, actions, values = self._model_run.action_value(input)
             del input
             # print(type(logits), type(actions), type(values))
             if debug and dii == i:
@@ -341,11 +414,21 @@ class SnakesA2C(Snakes):
                                 # Bootstrap from discounted best estimate
                                 (all_values + reward_moves) * self._discount,
                                 self._rewards.crash)
+
+            if NORMALIZE and self.nr_snakes > 1:
+                mean = rewards.mean()
+                var = rewards.var()
+                var  = math.sqrt(var * self.nr_snakes / (self.nr_snakes-1))
+                reward = (rewards - mean) / var
             # Calculate the advantage = current reward - predicted reward
             advantage = rewards - self._old_values[h0]
 
-            old_head  = self._history_head0
-            old_apple = self._history_apple0
+            if self._channels == 1 or DEBUG_INPUT:
+                old_apple = self._history_apple0
+                old_head  = self._history_head0
+                frame0 = self.frame_then()
+                old_tail = self._snake_body[self._all_snakes, (frame0 - self._history_score) & self.MASK]
+
             old_action = self._old_action[h0]
 
             if debug:
@@ -367,23 +450,32 @@ class SnakesA2C(Snakes):
                 if self._history_channels == 1 or DEBUG_INPUT:
                     input = [[self._history_field0[j],
                               self._point_image[old_apple[j]],
-                              self._point_image[old_head[j]]] for j in r]
+                              self._point_image[old_head[j]],
+                              self._point_image[old_tail[j]]
+                    ] for j in r]
                     # input = tf.convert_to_tensor(input, dtype=tf.float32)
                     input = np.array(input, dtype=TYPE_FLOAT)
+                    # Tensorflow CPU cannot handle channel first (GPU can)
                     # Move channels to the end (this doesn't copy)
                     # (of course it will slow down the copy to tensor)
-                    # Tensorflow CPU cannot handle channel first (GPU can)
                     input = np.rollaxis(input, 1,4)
                     if DEBUG_INPUT:
-                        assert np.array_equal(input, self._deep_history_field0[i:i1])
+                        self.input_equal(i, input, self._deep_history_field0[i:i1])
                 else:
                     input = self._deep_history_field0[i:i1]
-                if DEBUG_INPUT_PRINT:
+                if DEBUG_INPUT_PRINT and dii == i:
                     print("THEN")
-                    print(input[self._debug_index,:,:,CHANNEL_BODY])
-                    print(input[self._debug_index,:,:,CHANNEL_HEAD])
-                    print(input[self._debug_index,:,:,CHANNEL_APPLE])
-                # print(self._model.metrics_names)
+                    print(input[dj,:,:,CHANNEL_BODY].astype(np.int8))
+                    print(input[dj,:,:,CHANNEL_HEAD].astype(np.int8))
+                    print(input[dj,:,:,CHANNEL_TAIL].astype(np.int8))
+                    print(input[dj,:,:,CHANNEL_APPLE].astype(np.int8))
+                if debug and DEBUG_TRAIN and dii == i:
+                    logits, _, values = self._model_train.action_value(input[dj:dj+1])
+                    p = np.exp(logits[dj])/sum(np.exp(logits[dj]))
+                    print("Value  Before Train", values[dj])
+                    print("Logits Before Train", logits[dj], "p", p)
+
+                # print(self._model_train.metrics_names)
                 # print(channels.shape)
                 # print(old_action[i//batch_size].shape)
                 # print(advantage.shape)
@@ -392,9 +484,14 @@ class SnakesA2C(Snakes):
                 # Each argument to train_on_batch must have the same number of
                 # samples, so each shape should start with batch
                 action_advantage = np.stack((old_action[i//batch_size], advantage[i:i1]), axis=1)
-                loss = self._model.train_on_batch(
+                loss = self._model_train.train_on_batch(
                     input,
                     [action_advantage, rewards[i:i1]])
+                if debug and DEBUG_TRAIN and dii == i:
+                    logits, _, values = self._model_train.action_value(input[dj:dj+1])
+                    p = np.exp(logits[dj])/sum(np.exp(logits[dj]))
+                    print("Value  After Train", values[dj])
+                    print("Logits After Train", logits[dj], "p", p)
                 del input
                 del action_advantage
                 assert len(loss) == 3

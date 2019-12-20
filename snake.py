@@ -36,14 +36,16 @@ Usage:
            [--log-period=<period>] [--log=<log>] [--tensor-board=<dir>]
            [--wall=<wall>] [--symmetry] [--single]
            [--vision-file=<file>] [--reward-file=<file>]
-           [--learning-rate=<r>] [--discount <ratio>] [--accelerated]
+           [--discount <ratio>] [--accelerated]
+           [--single] [--learning-rate=<r>]
            [--history=<history>] [--history-pit]
   snake.py a2c [--snakes=<snakes>] [--debug] [--stepping] [--fps=<fps>]
            [--width=<width>] [--height=<height>]
            [--frames=<frames>] [--games=<games>] [--dump=<file>]
            [--columns=columns] [--rows=rows] [--block=<block_size>] [--pygame]
            [--log-period=<period>] [--log=<log>] [--tensor-board=<dir>]
-           [--reward-file=<file>] [--learning-rate=<r>] [--discount <ratio>]
+           [--reward-file=<file>] [--discount <ratio>]
+           [--single] [--learning-rate=<r>] [--value-weight=<w>]
            [--history=<history>] [--entropy-beta=<beta>] [--save-memory]
   snake.py benchmark
   snake.py -f <file>
@@ -102,6 +104,7 @@ Options:
                           extra time and memory. This is not completely needed
                           in the given mode but allows for easier debugging
                           (the historic layout is shown during debug)
+  --value-weight=<w>      Weight of value loss versus logits loss [Default: 0.5]
   --entropy-beta=<beta>   Fraction for entropy bonus to the loss function
                           [Default: 0.0001]
   --save-memory           Use a more compact representation of the snake pit
@@ -202,14 +205,21 @@ elif arguments["q-table"]:
     snake_kwargs["history"]       = int(arguments["--history"])
     snake_kwargs["history_pit"]   = arguments["--history-pit"]
 elif arguments["a2c"]:
-    from snakes.actor_critic import SnakesA2C
+    from snakes.actor_critic import SnakesA2C, CHANNELS
     snake_class = SnakesA2C
     snake_kwargs["history"]       = int(arguments["--history"])
     snake_kwargs["reward_file"]   = arguments["--reward-file"]
+    snake_kwargs["single"]        = arguments["--single"]
     snake_kwargs["learning_rate"] = float(arguments["--learning-rate"])
     snake_kwargs["discount"]      = float(arguments["--discount"])
     snake_kwargs["entropy_beta"]  = float(arguments["--entropy-beta"])
-    snake_kwargs["channels"]      = 1 if arguments["--save-memory"] else 3
+    snake_kwargs["value_weight"]  = float(arguments["--value-weight"])
+    if arguments["--save-memory"]:
+        snake_kwargs["channels"] = 1
+        snake_kwargs["history_channels"] = 1
+    else:
+        snake_kwargs["channels"] = CHANNELS
+        snake_kwargs["history_channels"] = CHANNELS
 else:
     raise(AssertionError("Unspecified snake type"))
 

@@ -29,10 +29,11 @@ TYPE_FLOAT = np.float32
 CHANNEL_BODY  = 0
 CHANNEL_APPLE = 1
 CHANNEL_HEAD  = 2
-CHANNELS = 3
+CHANNEL_TAIL  = 3
+CHANNELS = 4
 # Image is a field of IMAGE_CLEAR with the selected position IMAGE_SET
-IMAGE_SET   = 0
-IMAGE_CLEAR = 1
+IMAGE_SET   = 1
+IMAGE_CLEAR = 0
 
 def script():
     try:
@@ -968,6 +969,7 @@ class Snakes:
         return self._snake_body[self._all_snakes, tail_offset]
 
 
+    # pass values=None to only set the tail channel
     def tail_set(self, values):
         # print("Eat", values)
         # print("body length", self._body_length)
@@ -979,8 +981,15 @@ class Snakes:
         tail_offset = (offset - self._body_length) & self.MASK
         # print("tail offset", tail_offset)
         pos = self._snake_body[self._all_snakes, tail_offset]
+        if values is None:
+            # self.print_pos("Tail Set", pos)
+            self._deep_field[self._all_snakes, pos, CHANNEL_TAIL] = IMAGE_SET
+            return
         # self.print_pos("Tail pos", pos)
         self._field[self._all_snakes, pos] = values
+        if self._channels > 1:
+            # self.print_pos("Tail Clear", pos)
+            self._deep_field[self._all_snakes, pos, CHANNEL_TAIL] = IMAGE_CLEAR
         return pos
 
 
@@ -1298,10 +1307,17 @@ class Snakes:
             self._history_result0 = self._history_result[h0]
             eaten    = self._history_result0.eaten
             collided = self._history_result0.collided
-            self._history_score[eaten] += 1
             if self._history_pit:
+                # At frame0 == 0 this fetches nonsense tail values from
+                # _snake_body. However the following tail[eaten] = head
+                # replaces them by safe value
+                tail = self._snake_body[self._all_snakes, (frame0 -1 - self._history_score) & self.MASK]
                 if self._history_channels > 1:
                     self._deep_history_field[self._all_snakes, self._history_head0, CHANNEL_HEAD] = IMAGE_CLEAR
+                    # run_start() made sure the frame0 == 0 value is harmless
+                    # print("from", frame0, self._history_score, self.MASK, (frame0 - 1 - self._history_score) & self.MASK)
+                    # self.print_pos("Tail History Clear", tail)
+                    self._deep_history_field[self._all_snakes, tail, CHANNEL_TAIL] = IMAGE_CLEAR
                     self._deep_history_field[eaten, self._history_apple0[eaten], CHANNEL_APPLE] = IMAGE_CLEAR
                 self._history_apple0[eaten] = self._history_apple[h0]
                 self._history_head0 = self._snake_body[self._all_snakes, frame0]
@@ -1309,19 +1325,22 @@ class Snakes:
                     self._deep_history_field[self._all_snakes, self._history_head0, CHANNEL_HEAD] = IMAGE_SET
                     self._deep_history_field[eaten, self._history_apple0[eaten], CHANNEL_APPLE] = IMAGE_SET
 
-                # At frame0 == 0 this fetches nonsense tail values from
-                # _snake_body. However the next line immediately replaces all
-                # these values
-                tail = self._snake_body[self._all_snakes, (frame0 -1 - self._history_score) & self.MASK]
                 tail[eaten] = self._history_head0[eaten]
                 self._history_field[self._all_snakes, tail] = False
                 self._history_field0[collided] = 0
                 self._history_field[self._all_snakes, self._history_head0] = True
 
+            self._history_score[eaten] += 1
             self._history_score[collided] = 0
             self._history_game0[collided] = self._history_game[h0]
             # print(self._history_score_final)
             self._history_gained = self._history_score_final[self._history_game0 % self.HISTORY, self._all_snakes] - self._history_score
+            if self._history_pit and self._history_channels > 1:
+                tail = self._snake_body[self._all_snakes, (frame0 - self._history_score) & self.MASK]
+                # print("from", (frame0 - self._history_score) & self.MASK)
+                # self.print_pos("Tail History Set", tail)
+                self._deep_history_field[self._all_snakes, tail, CHANNEL_TAIL] = IMAGE_SET
+
             # print("Score", self._history_score)
             # print("Gained", self._history_gained)
             # print(self._history_score_final)
@@ -1431,11 +1450,10 @@ class Snakes:
             pos[collided] = self.rand(collided.size)
 
 
-    def move_execute(self, display, pos, move_result):
+    def move_execute(self, display, pos, move_result, tail_pos):
         is_eat   = move_result.is_eat
         collided = move_result.collided
 
-        tail_pos = self.tail_set(is_eat)
         self._body_length += is_eat
         if collided.size:
             is_eat[collided] = True
@@ -1444,12 +1462,15 @@ class Snakes:
         # Also before draw_pre_move so nr moves will be correct
         self._cur_move += 1
 
+        # Tail is the one from the previous game if collided
         display.draw_move(self._all_windows, self.yx(pos[self._all_windows]),
                           move_result.is_collision,
                           self.yx(self.head()[self._all_windows]),
                           is_eat, self.yx(tail_pos[self._all_windows]),
                           self.nr_moves(self._all_windows))
         self.head_set(pos)
+        if self._channels > 1:
+            self.tail_set(None)
 
         eaten = is_eat.nonzero()[0]
         if eaten.size:
@@ -1520,9 +1541,12 @@ class Snakes:
         self._nr_moves.fill(self._cur_move)
 
         if self._channels > 1:
+            # Make sure the initial clear of the head and apple channels
+            # is harmless
             pos0 = self.pos_from_xy(0, 0)
             self._apple.fill(pos0)
-            # Sharing is good enough, the head_set() below will set a new value
+            # Sharing is good enough, the head_set() below will use the current
+            # value for a (pointless) clear, then set a new value
             self._head = self._apple
 
         # print("Initial heads")
@@ -1533,6 +1557,8 @@ class Snakes:
         else:
             head = self.rand(self.nr_snakes)
         self.head_set(head)
+        if self._channels > 1:
+            self.tail_set(None)
         self.new_apples(self._all_snakes)
 
         if self._history:
@@ -1549,6 +1575,9 @@ class Snakes:
                     self._history_apple0.fill(pos0)
                     # Same with heads
                     self._history_head0 = self._history_apple0.copy()
+                    # And tail
+                    self._history_score.fill(0)
+                    self._snake_body[self._all_snakes, self.MASK] = pos0
                 self._history_apple = [None] * self.HISTORY
 
         # Pass w_head instead of head so we do self.yx only where needed
@@ -1614,12 +1643,15 @@ class Snakes:
             move_result = self.move_evaluate(plan)
             # Initial move_result has an "is_eat" but no "eaten" field
 
+            # Clean tails before move_collisions so body_length is still OK
+            tail_pos = self.tail_set(move_result.is_eat)
+
             # Start a new snake for all finished snakes (win, crash)
             self.move_collisions(display, plan, move_result)
 
             # Update snake state with the result of the move
             # Modifies "is_eat" with collided and sets "eaten in move_result
-            self.move_execute(display, plan, move_result)
+            self.move_execute(display, plan, move_result, tail_pos)
 
 
 class SnakesRandom(Snakes):
