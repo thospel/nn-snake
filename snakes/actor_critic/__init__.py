@@ -1,5 +1,6 @@
 from snakes import Snakes, Rewards, TYPE_FLOAT, TYPE_BOOL, CHANNELS, CHANNEL_BODY, CHANNEL_HEAD, CHANNEL_APPLE
 import numpy as np
+import math
 import tensorflow as tf
 import tensorflow.keras.layers as kl
 import tensorflow.keras.losses as kls
@@ -206,6 +207,10 @@ class SnakesA2C(Snakes):
                          point_image = point_image,
                          **kwargs)
 
+        # We subtract crash from the reward when a game ends.
+        # Compensate for that if we won
+        self._win_bonus += math.ceil(-self._rewards.crash / self._rewards.apple)
+
         self._learning_rate = TYPE_FLOAT(learning_rate)
         self._discount = TYPE_FLOAT(discount)
         self._value_factor = 0.5
@@ -325,13 +330,14 @@ class SnakesA2C(Snakes):
 
         all_values = np.concatenate(all_values, axis=None)
         if h0 is not None:
-            reward_moves = np.random.uniform(
-                self._rewards.move - self._rewards.rand /2,
-                self._rewards.move + self._rewards.rand /2)
-            reward_moves = np.random.uniform(
-                (reward_moves-self._rewards.rand/2) * self._history,
-                (reward_moves+self._rewards.rand/2) * self._history,
-                size=self.nr_snakes)
+            #reward_moves = np.random.uniform(
+            #    self._rewards.move - self._rewards.rand /2,
+            #    self._rewards.move + self._rewards.rand /2)
+            #reward_moves = np.random.uniform(
+            #    (reward_moves-self._rewards.rand/2) * self._history,
+            #    (reward_moves+self._rewards.rand/2) * self._history,
+            #    size=self.nr_snakes)
+            reward_moves = self._rewards.move * self._history
             rewards = self._history_gained * self._rewards.apple
             rewards += np.where(self._history_game0 == self._nr_games,
                                 # Bootstrap from discounted best estimate

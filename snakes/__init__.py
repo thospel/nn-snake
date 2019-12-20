@@ -560,12 +560,14 @@ class Snakes:
                  history   = 0,
                  history_pit = False,
                  point_image = False,
+                 win_bonus = 1,
                  view_x = None, view_y = None,
                  debug = False, xy_apple = True, xy_head = True):
         if nr_snakes <= 0:
             raise(ValueError("Number of snakes must be positive"))
 
         self.debug = debug
+        self._win_bonus = win_bonus
         self._channels = channels
         # Do we keep a cache of apple coordinates ?
         # This helps if e.g. we need the coordinates on every move decission
@@ -1281,7 +1283,7 @@ class Snakes:
         if move_result.won.size:
             won = move_result.won
             # Add the apple that the snake never got a chance to eat
-            self._history_score_final[(self.nr_games(won)-1) % self.HISTORY, won] += 1
+            self._history_score_final[(self.nr_games(won)-1) % self.HISTORY, won] += self._win_bonus
 
         frame0 = self.frame_then()
         if frame0 >= 0:
