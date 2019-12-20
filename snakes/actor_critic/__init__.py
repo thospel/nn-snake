@@ -16,6 +16,8 @@ def is_interactive():
 CONVOLUTION = False
 DEBUG_INPUT = False
 DEBUG_INPUT_PRINT = False
+DEBUG_TRAIN = False
+BUGGY = False
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
@@ -229,28 +231,37 @@ class SnakesA2C(Snakes):
 
     @tf.function
     def loss_logits(self, actions_advantages, logits):
-        # print("Logits_loss", type(actions_advantages), type(logits), flush=True)
+        # print("Logits_loss", actions_advantages, logits)
         # traceback.print_stack()
         # a trick to input actions and advantages through same API
         actions, advantages = tf.split(actions_advantages, 2, axis=-1)
+        # print("Actions", actions, "Advantages", advantages)
+        # print("Logits", logits)
         # sparse categorical CE loss obj that supports sample_weight arg on
         # call() from_logits argument ensures transformation into normalized
         # probabilities
+        # SparseCategoricalCrossentropy(a,b) = CategoricalCrossentropy(one_hot(a), b) / num_actions
         weighted_sparse_ce = kls.SparseCategoricalCrossentropy(from_logits=True)
         # policy loss is defined by policy gradients, weighted by advantages
         # note: we only calculate the loss on the actions we've actually taken
         policy_loss = weighted_sparse_ce(actions, logits, sample_weight=advantages)
-        # entropy loss can be calculated via CE over itself
-        entropy_loss = kls.categorical_crossentropy(logits, logits, from_logits=True)
+        if BUGGY:
+            entropy_loss = kls.categorical_crossentropy(logits, logits, from_logits=True)
+        else:
+            # print("Policy loss", policy_loss)
+            # entropy loss can be calculated via CE over itself
+            probabilities = tf.nn.softmax(logits)
+            entropy_loss = kls.categorical_crossentropy(probabilities, probabilities)
+        # print("Entropy loss", entropy_loss)
         # here signs are flipped because optimizer minimizes
         return policy_loss - self._entropy_beta * entropy_loss
 
 
     @tf.function
     def loss_value(self, rewards, value):
-        # print("Value_loss", type(rewards), type(value))
+        # print("Value_loss", rewards, value)
         # traceback.print_stack()
-        # value loss is typically MSE between value estimates and returns
+        # value loss is typically MSE between rewards and value estimates
         return self._value_factor * kls.mean_squared_error(rewards, value)
 
 
@@ -307,11 +318,11 @@ class SnakesA2C(Snakes):
                     assert np.array_equal(input, self._deep_field0[i:i1])
             else:
                 input = self._deep_field0[i:i1]
-            if DEBUG_INPUT_PRINT:
+            if DEBUG_INPUT_PRINT and dii == i:
                 print("NOW")
-                print(input[self._debug_index,:,:,CHANNEL_BODY])
-                print(input[self._debug_index,:,:,CHANNEL_HEAD])
-                print(input[self._debug_index,:,:,CHANNEL_APPLE])
+                print(input[dj,:,:,CHANNEL_BODY])
+                print(input[dj,:,:,CHANNEL_HEAD])
+                print(input[dj,:,:,CHANNEL_APPLE])
             # The returned values are of type numpy.ndarray
             # Except logits which is of type tf.Tensor as long as
             # action_value uses predict_on_batch() instead of predict()
@@ -378,11 +389,17 @@ class SnakesA2C(Snakes):
                         assert np.array_equal(input, self._deep_history_field0[i:i1])
                 else:
                     input = self._deep_history_field0[i:i1]
-                if DEBUG_INPUT_PRINT:
+                if DEBUG_INPUT_PRINT and dii == i:
                     print("THEN")
-                    print(input[self._debug_index,:,:,CHANNEL_BODY])
-                    print(input[self._debug_index,:,:,CHANNEL_HEAD])
-                    print(input[self._debug_index,:,:,CHANNEL_APPLE])
+                    print(input[dj,:,:,CHANNEL_BODY])
+                    print(input[dj,:,:,CHANNEL_HEAD])
+                    print(input[dj,:,:,CHANNEL_APPLE])
+                if debug and DEBUG_TRAIN and dii == i:
+                    logits, _, values = self._model.action_value(input[dj:dj+1])
+                    p = np.exp(logits[dj])/sum(np.exp(logits[dj]))
+                    print("Value  Before Train", values[dj])
+                    print("Logits Before Train", logits[dj], "p", p)
+
                 # print(self._model.metrics_names)
                 # print(channels.shape)
                 # print(old_action[i//batch_size].shape)
@@ -395,6 +412,11 @@ class SnakesA2C(Snakes):
                 loss = self._model.train_on_batch(
                     input,
                     [action_advantage, rewards[i:i1]])
+                if debug and DEBUG_TRAIN and dii == i:
+                    logits, _, values = self._model.action_value(input[dj:dj+1])
+                    p = np.exp(logits[dj])/sum(np.exp(logits[dj]))
+                    print("Value  After Train", values[dj])
+                    print("Logits After Train", logits[dj], "p", p)
                 del input
                 del action_advantage
                 assert len(loss) == 3

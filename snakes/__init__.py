@@ -31,8 +31,8 @@ CHANNEL_APPLE = 1
 CHANNEL_HEAD  = 2
 CHANNELS = 3
 # Image is a field of IMAGE_CLEAR with the selected position IMAGE_SET
-IMAGE_SET   = 0
-IMAGE_CLEAR = 1
+IMAGE_SET   = 1
+IMAGE_CLEAR = 0
 
 def script():
     try:
