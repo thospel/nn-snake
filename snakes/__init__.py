@@ -557,6 +557,7 @@ class Snakes:
                  width     = 40,
                  height    = 40,
                  channels  = 1,
+                 history_channels = 1,
                  history   = 0,
                  history_pit = False,
                  point_image = False,
@@ -569,6 +570,7 @@ class Snakes:
         self.debug = debug
         self._win_bonus = win_bonus
         self._channels = channels
+        self._history_channels = history_channels
         # Do we keep a cache of apple coordinates ?
         # This helps if e.g. we need the coordinates on every move decission
         self._xy_apple = xy_apple
@@ -705,7 +707,7 @@ class Snakes:
         self._history_score_final = np_empty(history_shape, dtype=TYPE_UPOS)
 
         if self._history_pit:
-            if self._channels == 1:
+            if self._history_channels == 1:
                 # The body (with edges, as a rectangle)
                 base = self._field1.copy()
                 self._history_field1 = base
@@ -723,7 +725,7 @@ class Snakes:
                 assert self._deep_history_field0.base is base
 
                 # Just the body (with edges, as a rectangle)
-                self._history_field1 = base[:,:,:,0]
+                self._history_field1 = base[:,:,:,CHANNEL_BODY]
                 assert self._history_field1.base is base
             # The body (without edges, as a rectangle)
             self._history_field0 = self._history_field1[:, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH]
@@ -1295,12 +1297,12 @@ class Snakes:
             collided = self._history_result0.collided
             self._history_score[eaten] += 1
             if self._history_pit:
-                if self._channels > 1:
+                if self._history_channels > 1:
                     self._deep_history_field[self._all_snakes, self._history_head0, CHANNEL_HEAD] = 0
                     self._deep_history_field[eaten, self._history_apple0[eaten], CHANNEL_APPLE] = 0
                 self._history_apple0[eaten] = self._history_apple[h0]
                 self._history_head0 = self._snake_body[self._all_snakes, frame0]
-                if self._channels > 1:
+                if self._history_channels > 1:
                     self._deep_history_field[self._all_snakes, self._history_head0, CHANNEL_HEAD] = 1
                     self._deep_history_field[eaten, self._history_apple0[eaten], CHANNEL_APPLE] = 1
 
@@ -1535,7 +1537,7 @@ class Snakes:
             self._history_result  = [None] * self.HISTORY
             self._history_game    = [None] * self.HISTORY
             if self._history_pit:
-                if self._channels == 1:
+                if self._history_channels == 1:
                     self._history_head0 = None
                 else:
                     # Prefill history_apple0 so we can safely construct frame 0

@@ -39,29 +39,29 @@ class ProbabilityDistribution(tf.keras.Model):
 
 
 class ActorCriticModel(tf.keras.Model):
-    def __init__(self, num_actions, height, width, data_format = "channels_last"):
+    def __init__(self, num_actions, height, width):
         super().__init__('mlp_policy')
 
         self.dist = ProbabilityDistribution()
 
         # no tf.get_variable(), just simple Keras API
         if CONVOLUTION:
-            self.model_conv(height, width, data_format)
+            self.model_conv(height, width)
         else:
-            self.model_dense(height, width, data_format)
+            self.model_dense(height, width)
         self.value = kl.Dense(1, kernel_regularizer=kr.l2(0.0001), name='value')
         # logits are unnormalized log probabilities
         self.logits = kl.Dense(num_actions, kernel_regularizer=kr.l2(0.0001), name='policy_logits')
 
 
-    def model_conv(self, height, width, data_format):
+    def model_conv(self, height, width):
         self.conv1 = kl.Conv2D(filters = 3, kernel_size = 3,
                                activation='relu',
-                               data_format = data_format,
+                               data_format = "channels_last",
                                input_shape=(height, width, 3))
         self.conv2 = kl.Conv2D(filters = 3, kernel_size = 3,
                                activation='relu',
-                               data_format = data_format,
+                               data_format = "channels_last",
                                input_shape=(height, width, 3))
         self.pooling1 = kl.MaxPooling2D()
         self.pooling2 = kl.MaxPooling2D()
@@ -69,16 +69,9 @@ class ActorCriticModel(tf.keras.Model):
         self.flatten2 = kl.Flatten()
 
 
-    def model_dense(self, height, width, data_format):
-        if data_format == "channels_first":
-            self.reshape = kl.Reshape((height*width*CHANNELS,),
-                                      input_shape = (CHANNELS, height, width))
-        elif data_format == "channels_last":
-            self.reshape = kl.Reshape((height*width*CHANNELS,),
-                                      input_shape = (height, width, CHANNELS))
-        else:
-            raise(ValueError("Unknown data_format:" + data_format))
-
+    def model_dense(self, height, width):
+        self.reshape = kl.Reshape((height*width*CHANNELS,),
+                                  input_shape = (height, width, CHANNELS))
         self.hidden1 = kl.Dense(128, activation='relu', kernel_regularizer=kr.l2(0.0001))
         self.hidden2 = kl.Dense(128, activation='relu', kernel_regularizer=kr.l2(0.0001))
 
@@ -183,7 +176,9 @@ class SnakesA2C(Snakes):
                  reward_file = None,
                  point_image = False,
                  # channels = 1,
+                 # history_channels = 1,
                  channels = CHANNELS,
+                 history_channels = CHANNELS,
                  learning_rate = 0.1,
                  discount      = 0.9,
                  entropy_beta  = 0.0001,
@@ -196,14 +191,16 @@ class SnakesA2C(Snakes):
 
         if DEBUG_INPUT:
             channels = CHANNELS
+            history_channels = CHANNELS
             point_image = True
-        if channels == 1:
+        if channels == 1 or history_channels == 1:
             point_image = True
         super().__init__(*args,
                          xy_head = xy_head,
                          xy_apple = xy_apple,
                          history_pit = history_pit,
                          channels = channels,
+                         history_channels = history_channels,
                          point_image = point_image,
                          **kwargs)
 
@@ -219,8 +216,7 @@ class SnakesA2C(Snakes):
         self._model = ActorCriticModel(
             4,
             width = self.WIDTH,
-            height = self.HEIGHT,
-            data_format = "channels_last" if CONVOLUTION or channels > 1 else "channels_first")
+            height = self.HEIGHT)
         self._model.compile(
             # optimizer = ko.RMSprop(lr = self._learning_rate),
             optimizer = 'adam',
@@ -300,12 +296,12 @@ class SnakesA2C(Snakes):
                 input = [[self._field0[j],
                           self._point_image[apple[j]],
                           self._point_image[head[j]]] for j in r]
-                # input = tf.convert_to_tensor(input, dtype=tf.float32)
                 input = np.array(input, dtype=TYPE_FLOAT)
-                if CONVOLUTION or DEBUG_INPUT:
-                    # Move channels to the end
-                    # Tensorflow CPU cannot handle channel first (GPU can)
-                    input = np.rollaxis(input, 1,4)
+                # Move channels to the end (this doesn't copy)
+                # (of course it will slow down the copy to tensor)
+                # Tensorflow CPU cannot handle channel first (GPU can)
+                input = np.rollaxis(input, 1,4)
+                # input = tf.convert_to_tensor(input, dtype=tf.float32)
                 if DEBUG_INPUT:
                     assert np.array_equal(input, self._deep_field0[i:i1])
             else:
@@ -366,16 +362,16 @@ class SnakesA2C(Snakes):
             for i in range(0, self.nr_snakes, batch_size):
                 i1 = min(i+batch_size, self.nr_snakes)
                 r = range(i, i1)
-                if self._channels == 1 or DEBUG_INPUT:
+                if self._history_channels == 1 or DEBUG_INPUT:
                     input = [[self._history_field0[j],
                               self._point_image[old_apple[j]],
                               self._point_image[old_head[j]]] for j in r]
                     # input = tf.convert_to_tensor(input, dtype=tf.float32)
                     input = np.array(input, dtype=TYPE_FLOAT)
-                    if CONVOLUTION or DEBUG_INPUT:
-                        # Move channels to the end
-                        # Tensorflow CPU cannot handle channel first (GPU can)
-                        input = np.rollaxis(input, 1,4)
+                    # Move channels to the end (this doesn't copy)
+                    # (of course it will slow down the copy to tensor)
+                    # Tensorflow CPU cannot handle channel first (GPU can)
+                    input = np.rollaxis(input, 1,4)
                     if DEBUG_INPUT:
                         assert np.array_equal(input, self._deep_history_field0[i:i1])
                 else:
