@@ -18,6 +18,7 @@ DEBUG_INPUT = False
 DEBUG_INPUT_PRINT = False
 DEBUG_TRAIN = False
 BUGGY = False
+NORMALIZE = False
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
@@ -58,25 +59,32 @@ class ActorCriticModel(tf.keras.Model):
 
 
     def model_conv(self, height, width):
-        self.conv1 = kl.Conv2D(filters = 3, kernel_size = 3,
+        self.conv1 = kl.Conv2D(filters = 8, kernel_size = 3,
+                               padding = "same",
                                activation='relu',
+                               kernel_regularizer=kr.l2(0.0001),
                                data_format = "channels_last",
                                input_shape=(height, width, 3))
         self.conv2 = kl.Conv2D(filters = 3, kernel_size = 3,
+                               padding = "same",
                                activation='relu',
-                               data_format = "channels_last",
-                               input_shape=(height, width, 3))
-        self.pooling1 = kl.MaxPooling2D()
-        self.pooling2 = kl.MaxPooling2D()
-        self.flatten1 = kl.Flatten()
-        self.flatten2 = kl.Flatten()
+                               kernel_regularizer=kr.l2(0.0001),
+                               data_format = "channels_last")
+        # self.pooling1 = kl.MaxPooling2D()
+        # self.pooling2 = kl.MaxPooling2D()
+        self.flatten = kl.Flatten()
+        # self.flatten2 = kl.Flatten()
 
 
     def model_dense(self, height, width):
         self.reshape = kl.Reshape((height*width*CHANNELS,),
                                   input_shape = (height, width, CHANNELS))
-        self.hidden1 = kl.Dense(128, activation='relu', kernel_regularizer=kr.l2(0.0001))
-        self.hidden2 = kl.Dense(128, activation='relu', kernel_regularizer=kr.l2(0.0001))
+        self.hidden1 = kl.Dense(128,
+                                activation='relu',
+                                kernel_regularizer=kr.l2(0.0001))
+        self.hidden2 = kl.Dense(128,
+                                activation='relu',
+                                kernel_regularizer=kr.l2(0.0001))
 
 
     # Typically gets called only once (on first evaluation)
@@ -90,13 +98,11 @@ class ActorCriticModel(tf.keras.Model):
 
         if CONVOLUTION:
             # separate hidden layers from the same input tensor
-            logs = self.conv1(x)
-            logs = self.pooling1(logs)
-            logs = self.flatten1(logs)
-
-            vals = self.conv2(x)
-            vals = self.pooling2(vals)
-            vals = self.flatten2(vals)
+            x = self.conv1(x)
+            x = self.conv2(x)
+            x = self.flatten(x)
+            logs = x
+            vals = x
         else:
             # logs = self.hidden1(x)
             # vals = self.hidden2(x)
@@ -184,7 +190,8 @@ class SnakesA2C(Snakes):
                  history_channels = CHANNELS,
                  learning_rate = 0.1,
                  discount      = 0.9,
-                 entropy_beta  = 0.0001,
+                 entropy_beta  = 0.01,
+                 switch_period = 40,
                  **kwargs):
 
         if reward_file is None:
@@ -215,18 +222,32 @@ class SnakesA2C(Snakes):
         self._discount = TYPE_FLOAT(discount)
         self._value_factor = 0.5
         self._entropy_beta = entropy_beta
+        self._switch_period = switch_period
         # self._eat_frame = np_empty(self.nr_snakes, TYPE_MOVES)
-        self._model = ActorCriticModel(
-            4,
-            width = self.WIDTH,
-            height = self.HEIGHT)
-        self._model.compile(
-            # optimizer = ko.RMSprop(lr = self._learning_rate),
-            optimizer = 'adam',
-            # define separate losses for policy logits and value estimate
-            loss = [self.loss_logits, self.loss_value])
-        print("Eager model:", self._model.run_eagerly)
-        print("Eager TF:", tf.executing_eagerly())
+        if True:
+            self._model_actor, self._model_critic, self._model_policy = self.build_network()
+        else:
+            self._model_run = ActorCriticModel(
+                4,
+                width  = self.WIDTH,
+                height = self.HEIGHT)
+            self._model_run.compile(
+                # optimizer = ko.RMSprop(lr = self._learning_rate),
+                optimizer = 'adam',
+                # define separate losses for policy logits and value estimate
+                loss = [self.loss_logits, self.loss_value])
+            # self._model_train = ActorCriticModel(
+            #    4,
+            #    width = self.WIDTH,
+            #    height = self.HEIGHT)
+            #self._model_train.compile(
+            #    # optimizer = ko.RMSprop(lr = self._learning_rate),
+            #    optimizer = 'adam',
+            #    # define separate losses for policy logits and value estimate
+            #    loss = [self.loss_logits, self.loss_value])
+            self._model_train = self._model_run
+            print("Eager model:", self._model_run.run_eagerly)
+            print("Eager TF:", tf.executing_eagerly())
 
 
     @tf.function
@@ -265,6 +286,42 @@ class SnakesA2C(Snakes):
         return self._value_factor * kls.mean_squared_error(rewards, value)
 
 
+    def build_network(self):
+        advantage = kl.Input(shape = (1,))
+        input = kl.Input(shape = (self.HEIGHT, self.WIDTH, CHANNELS))
+        reshape = kl.Reshape((self.HEIGHT*self.WIDTH*CHANNELS,))(input)
+        dense1 = kl.Dense(128,
+                          activation='relu',
+                          kernel_regularizer=kr.l2(0.0001))(reshape)
+        dense2 = kl.Dense(128,
+                          activation='relu',
+                          kernel_regularizer=kr.l2(0.0001))(dense1)
+        value = kl.Dense(1,
+                         kernel_regularizer=kr.l2(0.0001),
+                         name='value')(dense2)
+        # logits are unnormalized log probabilities
+        logits = kl.Dense(Snakes.NR_DIRECTIONS,
+                          kernel_regularizer=kr.l2(0.0001),
+                          name='policy_logits')(dense2)
+
+        weighted_sparse_ce = kls.SparseCategoricalCrossentropy(from_logits=True)
+        beta = self._entropy_beta
+
+        @tf.function
+        def custom_loss(actions, logits):
+            policy_loss = weighted_sparse_ce(actions, logits, sample_weight=advantage)
+            probabilities = tf.nn.softmax(logits)
+            entropy_loss = kls.categorical_crossentropy(probabilities, probabilities)
+            return policy_loss - beta * entropy_loss
+
+        policy = tf.keras.Model(inputs=input, outputs = logits)
+        policy.compile(optimizer = ko.Adam(), loss = custom_loss)
+        critic = tf.keras.Model(inputs=input, outputs = value)
+        critic.compile(optimizer = ko.Adam(), loss = 'mean_squared_error')
+        actor = tf.keras.Model(inputs=input, outputs = [logits, value])
+        return actor, critic, policy
+
+
     def log_constants(self, log_action):
         super().log_constants(log_action)
         log_action("ValueAlpha",  "%11.3f"  , self._value_factor)
@@ -290,6 +347,8 @@ class SnakesA2C(Snakes):
     def move_select(self, move_result, display):
         debug = self.debug
 
+        if False and self.frame() % self._switch_period == 0:
+            self._model_run, self._model_train = self._model_train, self._model_run
         head  = self.head()
         apple = self.apple()
 
@@ -326,12 +385,15 @@ class SnakesA2C(Snakes):
             # The returned values are of type numpy.ndarray
             # Except logits which is of type tf.Tensor as long as
             # action_value uses predict_on_batch() instead of predict()
-            logits, actions, values = self._model.action_value(input)
+            # logits, actions, values = self._model_run.action_value(input)
+            logits, values = self._model_actor(input)
             del input
+            print(type(logits), type(values))
             # print(type(logits), type(actions), type(values))
             if debug and dii == i:
                 p = np.exp(logits[dj])/sum(np.exp(logits[dj]))
                 print("Logits", logits[dj], "p", p)
+            actions = tf.squeeze(tf.random.categorical(logits, 1), axis=-1)
             del logits
             # print(actions, values)
             all_actions.append(actions)
@@ -352,6 +414,12 @@ class SnakesA2C(Snakes):
                                 # Bootstrap from discounted best estimate
                                 (all_values + reward_moves) * self._discount,
                                 self._rewards.crash)
+
+            if NORMALIZE and self.nr_snakes > 1:
+                mean = rewards.mean()
+                var = rewards.var()
+                var  = math.sqrt(var * self.nr_snakes / (self.nr_snakes-1))
+                reward = (rewards - mean) / var
             # Calculate the advantage = current reward - predicted reward
             advantage = rewards - self._old_values[h0]
 
@@ -395,12 +463,12 @@ class SnakesA2C(Snakes):
                     print(input[dj,:,:,CHANNEL_HEAD])
                     print(input[dj,:,:,CHANNEL_APPLE])
                 if debug and DEBUG_TRAIN and dii == i:
-                    logits, _, values = self._model.action_value(input[dj:dj+1])
+                    logits, _, values = self._model_train.action_value(input[dj:dj+1])
                     p = np.exp(logits[dj])/sum(np.exp(logits[dj]))
                     print("Value  Before Train", values[dj])
                     print("Logits Before Train", logits[dj], "p", p)
 
-                # print(self._model.metrics_names)
+                # print(self._model_train.metrics_names)
                 # print(channels.shape)
                 # print(old_action[i//batch_size].shape)
                 # print(advantage.shape)
@@ -408,24 +476,28 @@ class SnakesA2C(Snakes):
                 # Combine action and advantage into shape (batch,2)
                 # Each argument to train_on_batch must have the same number of
                 # samples, so each shape should start with batch
-                action_advantage = np.stack((old_action[i//batch_size], advantage[i:i1]), axis=1)
-                loss = self._model.train_on_batch(
-                    input,
-                    [action_advantage, rewards[i:i1]])
+                # action_advantage = np.stack((old_action[i//batch_size], advantage[i:i1]), axis=1)
+                loss_value = self._model_critic.train_on_batch(
+                    input, rewards[i:i1])
+                loss_logits = self._model_critic.train_on_batch(
+                    input, old_action[i//batch_size])
                 if debug and DEBUG_TRAIN and dii == i:
-                    logits, _, values = self._model.action_value(input[dj:dj+1])
+                    logits, _, values = self._model_train.action_value(input[dj:dj+1])
                     p = np.exp(logits[dj])/sum(np.exp(logits[dj]))
                     print("Value  After Train", values[dj])
                     print("Logits After Train", logits[dj], "p", p)
                 del input
-                del action_advantage
-                assert len(loss) == 3
+                # del action_advantage
+                # assert len(loss) == 3
                 # 0: total loss (output_1_loss + output_2_loss)
                 # 1: output_1_loss
                 # 2: output_2_loss
-                losses[0] += loss[0]
-                losses[1] += loss[1]
-                losses[2] += loss[2]
+                # losses[0] += loss[0]
+                # losses[1] += loss[1]
+                # losses[2] += loss[2]
+                losses[0] += loss_logits + loss_value
+                losses[1] += loss_logits
+                losses[2] += loss_value
 
             self._loss = losses
             if debug:
