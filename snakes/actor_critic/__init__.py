@@ -342,6 +342,104 @@ class SnakesA2C(Snakes):
         self._loss = None
 
 
+    def fit(self, old_action, advantage, rewards):
+        debug = self.debug
+        batching = self._history_channels == 1 or DEBUG_INPUT
+
+        if batching:
+            old_apple = self._history_apple0
+            old_head  = self._history_head0
+            frame0 = self.frame_then()
+            old_tail = self._snake_body[self._all_snakes, (frame0 - self._history_score) & self.MASK]
+            batch_size = 2048
+        else:
+            batch_size = self.nr_snakes
+
+        di, dj = divmod(self._debug_index, batch_size)
+        dii = di * batch_size
+
+        action_advantage = np.stack((old_action, advantage), axis=1)
+
+        losses = [0, 0, 0]
+        for i in range(0, self.nr_snakes, batch_size):
+            i1 = min(i+batch_size, self.nr_snakes)
+            if batching:
+                input = [[self._history_field0[j],
+                          self._point_image[old_apple[j]],
+                          self._point_image[old_head[j]],
+                          self._point_image[old_tail[j]]
+                ] for j in range(i, i1)]
+                # input = tf.convert_to_tensor(input, dtype=tf.float32)
+                input = np.array(input, dtype=TYPE_FLOAT)
+                # Tensorflow CPU cannot handle channel first (GPU can)
+                # Move channels to the end (this doesn't copy)
+                # (of course it will slow down the copy to tensor)
+                input = np.rollaxis(input, 1,4)
+                if DEBUG_INPUT:
+                    self.input_equal(i, input, self._deep_history_field0[i:i1])
+            else:
+                # input = self._deep_history_field0[i:i1]
+                input = self._deep_history_field0
+            if DEBUG_INPUT_PRINT and dii == i:
+                print("THEN")
+                print(input[dj,:,:,CHANNEL_BODY].astype(np.int8))
+                print(input[dj,:,:,CHANNEL_HEAD].astype(np.int8))
+                print(input[dj,:,:,CHANNEL_TAIL].astype(np.int8))
+                print(input[dj,:,:,CHANNEL_APPLE].astype(np.int8))
+            if debug and DEBUG_TRAIN and dii == i:
+                logits, _, values = self._model_train.action_value(input[dj:dj+1])
+                p = np.exp(logits[dj])/sum(np.exp(logits[dj]))
+                print("Value  Before Train", values[dj])
+                print("Logits Before Train", logits[dj], "p", p)
+
+            # print(self._model_train.metrics_names)
+            # print(channels.shape)
+            # print(old_action[i//batch_size].shape)
+            # print(advantage.shape)
+            # print(rewards.shape)
+            # Combine action and advantage into shape (batch,2)
+            # Each argument to train_on_batch must have the same number of
+            # samples, so each shape should start with batch
+            if batching:
+                loss = self._model_train.train_on_batch(
+                    input,
+                    [action_advantage[i:i1], rewards[i:i1]])
+            elif False:
+                loss = self._model_train.train_on_batch(
+                    input,
+                    [action_advantage, rewards])
+            else:
+                history = self._model_train.fit(
+                    x = input,
+                    y = [action_advantage, rewards],
+                    batch_size = self.nr_snakes,
+                    epochs = 1,
+                    shuffle = True,
+                    verbose = 0
+                )
+                history = history.history
+                # print(history)
+                loss = [history["loss"][-1],
+                        history["output_1_loss"][-1],
+                        history["output_2_loss"][-1]]
+            if debug and DEBUG_TRAIN and dii == i:
+                logits, _, values = self._model_train.action_value(input[dj:dj+1])
+                p = np.exp(logits[dj])/sum(np.exp(logits[dj]))
+                print("Value  After Train", values[dj])
+                print("Logits After Train", logits[dj], "p", p)
+            del input
+            assert len(loss) == 3
+            # 0: total loss (output_1_loss + output_2_loss)
+            # 1: output_1_loss
+            # 2: output_2_loss
+            losses[0] += loss[0]
+            losses[1] += loss[1]
+            losses[2] += loss[2]
+        self._loss = losses
+        if debug:
+            print("Loss", losses[0])
+
+
     def move_select(self, move_result, display):
         debug = self.debug
 
@@ -362,13 +460,12 @@ class SnakesA2C(Snakes):
         all_values  = []
         for i in range(0, self.nr_snakes, batch_size):
             i1 = min(i+batch_size, self.nr_snakes)
-            r = range(i, i1)
             if self._channels == 1 or DEBUG_INPUT:
                 input = [[self._field0[j],
                           self._point_image[apple[j]],
                           self._point_image[head[j]],
                           self._point_image[tail[j]]
-                ] for j in r]
+                ] for j in range(i, i1)]
                 input = np.array(input, dtype=TYPE_FLOAT)
                 # Tensorflow CPU cannot handle channel first (GPU can)
                 # Move channels to the end (this doesn't copy)
@@ -399,7 +496,9 @@ class SnakesA2C(Snakes):
             all_actions.append(actions)
             all_values.append(values)
 
-        all_values = np.concatenate(all_values, axis=None)
+        all_values  = np.concatenate(all_values,  axis=None)
+        all_actions = np.concatenate(all_actions, axis=None)
+
         if h0 is not None:
             #reward_moves = np.random.uniform(
             #    self._rewards.move - self._rewards.rand /2,
@@ -423,17 +522,11 @@ class SnakesA2C(Snakes):
             # Calculate the advantage = current reward - predicted reward
             advantage = rewards - self._old_values[h0]
 
-            if self._channels == 1 or DEBUG_INPUT:
-                old_apple = self._history_apple0
-                old_head  = self._history_head0
-                frame0 = self.frame_then()
-                old_tail = self._snake_body[self._all_snakes, (frame0 - self._history_score) & self.MASK]
-
             old_action = self._old_action[h0]
 
             if debug:
                 print("Old Action = %d, Old Value = %f, New Value = %f" %
-                      (old_action[di][dj],
+                      (old_action[self._debug_index],
                        self._old_values[h0][self._debug_index],
                        all_values[self._debug_index]))
                 print("Reward = %f, Advantage = %f (Old Game = %d, New Game = %d)" %
@@ -441,74 +534,11 @@ class SnakesA2C(Snakes):
                        advantage[self._debug_index],
                        self._history_game0[self._debug_index],
                        self._nr_games[self._debug_index]))
-
-            batch_size = 2048
-            losses = [0, 0, 0]
-            for i in range(0, self.nr_snakes, batch_size):
-                i1 = min(i+batch_size, self.nr_snakes)
-                r = range(i, i1)
-                if self._history_channels == 1 or DEBUG_INPUT:
-                    input = [[self._history_field0[j],
-                              self._point_image[old_apple[j]],
-                              self._point_image[old_head[j]],
-                              self._point_image[old_tail[j]]
-                    ] for j in r]
-                    # input = tf.convert_to_tensor(input, dtype=tf.float32)
-                    input = np.array(input, dtype=TYPE_FLOAT)
-                    # Tensorflow CPU cannot handle channel first (GPU can)
-                    # Move channels to the end (this doesn't copy)
-                    # (of course it will slow down the copy to tensor)
-                    input = np.rollaxis(input, 1,4)
-                    if DEBUG_INPUT:
-                        self.input_equal(i, input, self._deep_history_field0[i:i1])
-                else:
-                    input = self._deep_history_field0[i:i1]
-                if DEBUG_INPUT_PRINT and dii == i:
-                    print("THEN")
-                    print(input[dj,:,:,CHANNEL_BODY].astype(np.int8))
-                    print(input[dj,:,:,CHANNEL_HEAD].astype(np.int8))
-                    print(input[dj,:,:,CHANNEL_TAIL].astype(np.int8))
-                    print(input[dj,:,:,CHANNEL_APPLE].astype(np.int8))
-                if debug and DEBUG_TRAIN and dii == i:
-                    logits, _, values = self._model_train.action_value(input[dj:dj+1])
-                    p = np.exp(logits[dj])/sum(np.exp(logits[dj]))
-                    print("Value  Before Train", values[dj])
-                    print("Logits Before Train", logits[dj], "p", p)
-
-                # print(self._model_train.metrics_names)
-                # print(channels.shape)
-                # print(old_action[i//batch_size].shape)
-                # print(advantage.shape)
-                # print(rewards.shape)
-                # Combine action and advantage into shape (batch,2)
-                # Each argument to train_on_batch must have the same number of
-                # samples, so each shape should start with batch
-                action_advantage = np.stack((old_action[i//batch_size], advantage[i:i1]), axis=1)
-                loss = self._model_train.train_on_batch(
-                    input,
-                    [action_advantage, rewards[i:i1]])
-                if debug and DEBUG_TRAIN and dii == i:
-                    logits, _, values = self._model_train.action_value(input[dj:dj+1])
-                    p = np.exp(logits[dj])/sum(np.exp(logits[dj]))
-                    print("Value  After Train", values[dj])
-                    print("Logits After Train", logits[dj], "p", p)
-                del input
-                del action_advantage
-                assert len(loss) == 3
-                # 0: total loss (output_1_loss + output_2_loss)
-                # 1: output_1_loss
-                # 2: output_2_loss
-                losses[0] += loss[0]
-                losses[1] += loss[1]
-                losses[2] += loss[2]
-
-            self._loss = losses
-            if debug:
-                print("Loss", losses[0])
+            self.fit(old_action, advantage, rewards)
 
         self._old_action[h] = all_actions
         self._old_values[h] = all_values
         if debug:
-            print("New Value = %f, New Action = %d" % (all_values[self._debug_index], all_actions[di][dj]))
-        pos = head + self.DIRECTIONS[np.concatenate(all_actions, axis=None)]
+            print("New Value = %f, New Action = %d" % (all_values[self._debug_index], all_actions[self._debug_index]))
+        pos = head + self.DIRECTIONS[all_actions]
         return pos
