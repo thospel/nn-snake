@@ -19,6 +19,11 @@ DEBUG_INPUT_PRINT = False
 DEBUG_TRAIN = False
 BUGGY = False
 NORMALIZE = False
+BATCH = False
+EPOCHS = 1
+REGULARIZER=0.00001
+# REGULARIZER=0
+EXTENDED = False
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
@@ -43,52 +48,82 @@ class ProbabilityDistribution(tf.keras.Model):
 
 
 class ActorCriticModel(tf.keras.Model):
+    def kwargs(self):
+        kwargs = {}
+        if REGULARIZER:
+            kwargs["kernel_regularizer"] = kr.l2(REGULARIZER)
+        return kwargs
+
     def __init__(self, num_actions, height, width):
         super().__init__('mlp_policy')
 
         self.dist = ProbabilityDistribution()
-
+        self.my_layers = []
         # no tf.get_variable(), just simple Keras API
         if CONVOLUTION:
             self.model_conv(height, width)
         else:
             self.model_dense(height, width)
-        self.value = kl.Dense(1, kernel_regularizer=kr.l2(0.0001), name='value')
+        self.value = kl.Dense(1,
+                              name='value',
+                              **self.kwargs())
+
         # logits are unnormalized log probabilities
-        self.logits = kl.Dense(num_actions, kernel_regularizer=kr.l2(0.0001), name='policy_logits')
+        self.logits = kl.Dense(num_actions,
+                               name='policy_logits',
+                               **self.kwargs())
+
+
+    def append_conv(self, *args, activation = None, **kwargs):
+        if BATCH:
+            self.my_layers.append(kl.Conv2D(*args, use_bias = False, **kwargs))
+            self.my_layers.append(kl.BatchNormalization())
+            self.my_layers.append(kl.Activation(activation))
+        else:
+            self.my_layers.append(
+                kl.Conv2D(*args, activation=activation, **kwargs))
+
+
+    def append_dense(self, *args, activation = None, **kwargs):
+        if BATCH:
+            self.my_layers.append(kl.Dense(*args, use_bias = False, **kwargs))
+            self.my_layers.append(kl.BatchNormalization())
+            self.my_layers.append(kl.Activation(activation))
+        else:
+            self.my_layers.append(
+                kl.Dense(*args, activation=activation, **kwargs))
 
 
     def model_conv(self, height, width):
-        self.conv1 = kl.Conv2D(filters = 8, kernel_size = 3,
-                               padding = "same",
-                               activation='relu',
-                               kernel_regularizer=kr.l2(0.0001),
-                               data_format = "channels_last",
-                               input_shape=(height, width, 3))
-        self.conv2 = kl.Conv2D(filters = 3, kernel_size = 3,
-                               padding = "same",
-                               activation='relu',
-                               kernel_regularizer=kr.l2(0.0001),
-                               data_format = "channels_last")
-        # self.pooling1 = kl.MaxPooling2D()
-        # self.pooling2 = kl.MaxPooling2D()
-        self.flatten = kl.Flatten()
-        # self.flatten2 = kl.Flatten()
+        self.append_conv(filters = 8, kernel_size = 3,
+                         # padding = "valid" if EXTENDED else "same",
+                         padding = "same",
+                         activation='relu',
+                         data_format = "channels_last",
+                         input_shape=(height, width, 3),
+                         **self.kwargs())
+        self.append_conv(filters = 4, kernel_size = 3,
+                         padding = "same",
+                         activation='relu',
+                         data_format = "channels_last",
+                         **self.kwargs())
+        # self.my_layers.append(kl.MaxPooling2D())
+        self.my_layers.append(kl.Flatten())
 
 
     def model_dense(self, height, width):
-        self.reshape = kl.Reshape((height*width*CHANNELS,),
-                                  input_shape = (height, width, CHANNELS))
-        self.hidden1 = kl.Dense(128,
-                                activation='relu',
-                                kernel_regularizer=kr.l2(0.0001))
-        self.hidden2 = kl.Dense(128,
-                                activation='relu',
-                                kernel_regularizer=kr.l2(0.0001))
+        self.my_layers.append(
+            kl.Reshape((height*width*CHANNELS,),
+                       input_shape = (height, width, CHANNELS)))
+        self.append_dense(128,
+                          activation='relu',
+                          **self.kwargs())
+        self.append_dense(128,
+                          activation='relu',
+                          **self.kwargs())
 
 
     # Typically gets called only once (on first evaluation)
-    @tf.function
     def call(self, inputs):
         # print("Call Model", flush=True)
         # traceback.print_stack()
@@ -96,23 +131,12 @@ class ActorCriticModel(tf.keras.Model):
         # x = tf.convert_to_tensor(inputs, dtype=tf.float32)
         x = inputs
 
-        if CONVOLUTION:
-            # separate hidden layers from the same input tensor
-            x = self.conv1(x)
-            x = self.conv2(x)
-            x = self.flatten(x)
-            logs = x
-            vals = x
-        else:
-            # logs = self.hidden1(x)
-            # vals = self.hidden2(x)
-            x = self.reshape(x)
-            x = self.hidden1(x)
-            x = self.hidden2(x)
-            logs = x
-            vals = x
+        # logs = self.hidden1(x)
+        # vals = self.hidden2(x)
+        for layer in self.my_layers:
+            x = layer(x)
 
-        return self.logits(logs), self.value(vals)
+        return self.logits(x), self.value(x)
 
 
     def action_value(self, obs):
@@ -296,6 +320,7 @@ class SnakesA2C(Snakes):
             lr *= self.nr_snakes
 
         log_action("Learning Rate", "%8.3f",  lr)
+        log_action("Discount",     "%13.3f",  self._discount)
         log_action("ValueAlpha",  "%11.3f"  , self._value_weight)
         log_action("EntropyBeta", "%10.3f"  , self._entropy_beta)
         log_action("Reward apple",  "%9.3f",  self._rewards.apple)
@@ -379,7 +404,10 @@ class SnakesA2C(Snakes):
                     self.input_equal(i, input, self._deep_history_field0[i:i1])
             else:
                 # input = self._deep_history_field0[i:i1]
-                input = self._deep_history_field0
+                if EXTENDED:
+                    input = self._deep_history_field1
+                else:
+                    input = self._deep_history_field0
             if DEBUG_INPUT_PRINT and dii == i:
                 print("THEN")
                 print(input[dj,:,:,CHANNEL_BODY].astype(np.int8))
@@ -404,16 +432,21 @@ class SnakesA2C(Snakes):
                 loss = self._model_train.train_on_batch(
                     input,
                     [action_advantage[i:i1], rewards[i:i1]])
-            elif False:
-                loss = self._model_train.train_on_batch(
-                    input,
-                    [action_advantage, rewards])
+            elif True:
+                for i in range(EPOCHS):
+                    loss = self._model_train.train_on_batch(
+                        input,
+                        [action_advantage, rewards])
             else:
+                # Like predict() above this leaks memory in my current version
+                # of tensorflow (2.0)
+                # This works badly if batch_size is the standard 32
+                # (it both runs very slow and it conerges terrbily)
                 history = self._model_train.fit(
                     x = input,
                     y = [action_advantage, rewards],
                     batch_size = self.nr_snakes,
-                    epochs = 1,
+                    epochs = EPOCHS,
                     shuffle = True,
                     verbose = 0
                 )
@@ -475,7 +508,10 @@ class SnakesA2C(Snakes):
                 if DEBUG_INPUT:
                     self.input_equal(i, input, self._deep_field0[i:i1])
             else:
-                input = self._deep_field0[i:i1]
+                if EXTENDED:
+                    input = self._deep_field1[i:i1]
+                else:
+                    input = self._deep_field0[i:i1]
             if DEBUG_INPUT_PRINT and dii == i:
                 print("NOW")
                 print(input[dj,:,:,CHANNEL_BODY].astype(np.int8))
