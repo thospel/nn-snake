@@ -13,16 +13,19 @@ def is_interactive():
     return not hasattr(main, '__file__')
 
 
-CONVOLUTION = False
+CONVOLUTION = True
 DEBUG_INPUT = False
 DEBUG_INPUT_PRINT = False
 DEBUG_TRAIN = False
 BUGGY = False
 NORMALIZE = False
-BATCH = False
+BATCH_NORM = False
+BATCH_SIZE = 2048
+FIT = False
 EPOCHS = 1
-REGULARIZER=0.00001
-# REGULARIZER=0
+# REGULARIZER=0.00001
+REGULARIZER=0
+# Also include the edge
 EXTENDED = False
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
@@ -75,7 +78,7 @@ class ActorCriticModel(tf.keras.Model):
 
 
     def append_conv(self, *args, activation = None, **kwargs):
-        if BATCH:
+        if BATCH_NORM:
             self.my_layers.append(kl.Conv2D(*args, use_bias = False, **kwargs))
             self.my_layers.append(kl.BatchNormalization())
             self.my_layers.append(kl.Activation(activation))
@@ -85,7 +88,7 @@ class ActorCriticModel(tf.keras.Model):
 
 
     def append_dense(self, *args, activation = None, **kwargs):
-        if BATCH:
+        if BATCH_NORM:
             self.my_layers.append(kl.Dense(*args, use_bias = False, **kwargs))
             self.my_layers.append(kl.BatchNormalization())
             self.my_layers.append(kl.Activation(activation))
@@ -100,15 +103,39 @@ class ActorCriticModel(tf.keras.Model):
                          padding = "same",
                          activation='relu',
                          data_format = "channels_last",
-                         input_shape=(height, width, 3),
+                         input_shape=(height, width, CHANNELS),
                          **self.kwargs())
-        self.append_conv(filters = 4, kernel_size = 3,
+        # self.append_conv(filters = 4, kernel_size = 3,
+        #                 padding = "same",
+        #                 activation='relu',
+        #                 data_format = "channels_last",
+        #                 **self.kwargs())
+        # self.my_layers.append(kl.MaxPooling2D())
+        self.append_conv(filters = 16,
+                         kernel_size = 3,
+                         strides = 2,
                          padding = "same",
                          activation='relu',
                          data_format = "channels_last",
                          **self.kwargs())
-        # self.my_layers.append(kl.MaxPooling2D())
+        self.append_conv(filters = 32,
+                         kernel_size = 3,
+                         strides = 2,
+                         padding = "same",
+                         activation='relu',
+                         data_format = "channels_last",
+                         **self.kwargs())
+        #self.append_conv(filters = 64,
+        #                 kernel_size = 3,
+        #                 strides = 2,
+        #                 padding = "same",
+        #                 activation='relu',
+        #                 data_format = "channels_last",
+        #                 **self.kwargs())
         self.my_layers.append(kl.Flatten())
+        self.append_dense(128,
+                          activation='relu',
+                          **self.kwargs())
 
 
     def model_dense(self, height, width):
@@ -218,6 +245,8 @@ class SnakesA2C(Snakes):
                  entropy_beta  = 0.01,
                  value_weight  = 0.5,
                  switch_period = 40,
+                 greedy_period = 0,
+                 batch_size    = BATCH_SIZE,
                  **kwargs):
 
         if reward_file is None:
@@ -252,6 +281,8 @@ class SnakesA2C(Snakes):
         self._value_weight = value_weight
         self._entropy_beta = entropy_beta
         self._switch_period = switch_period
+        self._greedy_period = greedy_period
+        self._batch_size = batch_size
         # self._eat_frame = np_empty(self.nr_snakes, TYPE_MOVES)
         self._model_run = ActorCriticModel(
             4,
@@ -262,6 +293,8 @@ class SnakesA2C(Snakes):
             optimizer = ko.Adam(lr = self._learning_rate),
             # define separate losses for policy logits and value estimate
             loss = [self.loss_logits, self.loss_value])
+        #self._model_run.build((None, self.HEIGHT, self.WIDTH, CHANNELS))
+        #print(self._model_run.summary())
         # self._model_train = ActorCriticModel(
         #    4,
         #    width = self.WIDTH,
@@ -369,16 +402,18 @@ class SnakesA2C(Snakes):
 
     def fit(self, old_action, advantage, rewards):
         debug = self.debug
-        batching = self._history_channels == 1 or DEBUG_INPUT
 
-        if batching:
+        if FIT:
+            batch_size = self.nr_snakes
+        else:
+            batch_size = min(self._batch_size, self.nr_snakes)
+        batching = batch_size != self.nr_snakes
+
+        if self._history_channels == 1 or DEBUG_INPUT:
             old_apple = self._history_apple0
             old_head  = self._history_head0
             frame0 = self.frame_then()
             old_tail = self._snake_body[self._all_snakes, (frame0 - self._history_score) & self.MASK]
-            batch_size = 2048
-        else:
-            batch_size = self.nr_snakes
 
         di, dj = divmod(self._debug_index, batch_size)
         dii = di * batch_size
@@ -388,7 +423,7 @@ class SnakesA2C(Snakes):
         losses = [0, 0, 0]
         for i in range(0, self.nr_snakes, batch_size):
             i1 = min(i+batch_size, self.nr_snakes)
-            if batching:
+            if self._history_channels == 1 or DEBUG_INPUT:
                 input = [[self._history_field0[j],
                           self._point_image[old_apple[j]],
                           self._point_image[old_head[j]],
@@ -403,11 +438,13 @@ class SnakesA2C(Snakes):
                 if DEBUG_INPUT:
                     self.input_equal(i, input, self._deep_history_field0[i:i1])
             else:
-                # input = self._deep_history_field0[i:i1]
                 if EXTENDED:
                     input = self._deep_history_field1
                 else:
                     input = self._deep_history_field0
+                if batching:
+                    input = input[i:i1]
+
             if DEBUG_INPUT_PRINT and dii == i:
                 print("THEN")
                 print(input[dj,:,:,CHANNEL_BODY].astype(np.int8))
@@ -429,23 +466,21 @@ class SnakesA2C(Snakes):
             # Each argument to train_on_batch must have the same number of
             # samples, so each shape should start with batch
             if batching:
-                loss = self._model_train.train_on_batch(
-                    input,
-                    [action_advantage[i:i1], rewards[i:i1]])
-            elif True:
-                for i in range(EPOCHS):
-                    loss = self._model_train.train_on_batch(
-                        input,
-                        [action_advantage, rewards])
+                action_advantage_batch = action_advantage[i:i1]
+                rewards_batch = rewards[i:i1]
             else:
+                action_advantage_batch = action_advantage
+                rewards_batch = rewards
+
+            if FIT:
                 # Like predict() above this leaks memory in my current version
                 # of tensorflow (2.0)
                 # This works badly if batch_size is the standard 32
-                # (it both runs very slow and it conerges terrbily)
+                # (it both runs very slow and it converges terrbily)
                 history = self._model_train.fit(
                     x = input,
-                    y = [action_advantage, rewards],
-                    batch_size = self.nr_snakes,
+                    y = [action_advantage_batch, rewards_batch],
+                    batch_size = self._batch_size,
                     epochs = EPOCHS,
                     shuffle = True,
                     verbose = 0
@@ -455,12 +490,17 @@ class SnakesA2C(Snakes):
                 loss = [history["loss"][-1],
                         history["output_1_loss"][-1],
                         history["output_2_loss"][-1]]
+            else:
+                for i in range(EPOCHS):
+                    loss = self._model_train.train_on_batch(
+                        input,
+                        [action_advantage_batch, rewards_batch])
+
             if debug and DEBUG_TRAIN and dii == i:
                 logits, _, values = self._model_train.action_value(input[dj:dj+1])
                 p = np.exp(logits[dj])/sum(np.exp(logits[dj]))
                 print("Value  After Train", values[dj])
                 print("Logits After Train", logits[dj], "p", p)
-            del input
             assert len(loss) == 3
             # 0: total loss (output_1_loss + output_2_loss)
             # 1: output_1_loss
@@ -468,6 +508,7 @@ class SnakesA2C(Snakes):
             losses[0] += loss[0]
             losses[1] += loss[1]
             losses[2] += loss[2]
+
         self._loss = losses
         if debug:
             print("Loss", losses[0])
@@ -486,7 +527,7 @@ class SnakesA2C(Snakes):
         h  = self.frame_history_now()
         h0 = self.frame_history_then()
 
-        batch_size = 2048
+        batch_size = self._batch_size
         di, dj = divmod(self._debug_index, batch_size)
         dii = di * batch_size
         all_actions = []
@@ -535,7 +576,10 @@ class SnakesA2C(Snakes):
         all_values  = np.concatenate(all_values,  axis=None)
         all_actions = np.concatenate(all_actions, axis=None)
 
-        if h0 is not None:
+        if h0 is None:
+            if self.frame() == 0:
+                self._model_run.summary()
+        else:
             #reward_moves = np.random.uniform(
             #    self._rewards.move - self._rewards.rand /2,
             #    self._rewards.move + self._rewards.rand /2)
@@ -572,8 +616,11 @@ class SnakesA2C(Snakes):
                        self._nr_games[self._debug_index]))
             self.fit(old_action, advantage, rewards)
 
-        self._old_action[h] = all_actions
         self._old_values[h] = all_values
+        if self.frame() < self._greedy_period:
+            distance, head, head_x, head_y = self.apple_distance()
+            all_actions = distance.argmax(axis=0)
+        self._old_action[h] = all_actions
         if debug:
             print("New Value = %f, New Action = %d" % (all_values[self._debug_index], all_actions[self._debug_index]))
         pos = head + self.DIRECTIONS[all_actions]

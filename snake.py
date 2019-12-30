@@ -44,9 +44,10 @@ Usage:
            [--frames=<frames>] [--games=<games>] [--dump=<file>]
            [--columns=columns] [--rows=rows] [--block=<block_size>] [--pygame]
            [--log-period=<period>] [--log=<log>] [--tensor-board=<dir>]
-           [--reward-file=<file>] [--discount <ratio>]
+           [--reward-file=<file>] [--discount <ratio>] [--greedy <period>]
            [--single] [--learning-rate=<r>] [--value-weight=<w>]
            [--history=<history>] [--entropy-beta=<beta>] [--save-memory]
+           [--batch-size=<batch>]
   snake.py benchmark
   snake.py -f <file>
   snake.py (-h | --help)
@@ -107,6 +108,10 @@ Options:
   --value-weight=<w>      Weight of value loss versus logits loss [Default: 0.5]
   --entropy-beta=<beta>   Fraction for entropy bonus to the loss function
                           [Default: 0.0001]
+  --greedy <period>       For how many frames to ignore the planner and just be
+                          greedy. This gives the neural net an initial boost.
+                          [Default: 0]
+  --batch-size=<batch>    Batch size for tensorflow [Default: 2048]
   --save-memory           Use a more compact representation of the snake pit
                           at the cost of having to build the input to tensorflow
   -f <file>:              Used by jupyter, ignored
@@ -220,6 +225,9 @@ elif arguments["a2c"]:
     else:
         snake_kwargs["channels"] = CHANNELS
         snake_kwargs["history_channels"] = CHANNELS
+    snake_kwargs["greedy_period"] = int(arguments["--greedy"])
+    snake_kwargs["batch_size"] = int(arguments["--batch-size"])
+
 else:
     raise(AssertionError("Unspecified snake type"))
 
