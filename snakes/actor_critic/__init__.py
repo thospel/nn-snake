@@ -27,6 +27,9 @@ EPOCHS = 1
 REGULARIZER=0
 # Also include the edge
 EXTENDED = False
+LOGITS_MIN = -8
+LOGITS_MAX =  0
+DEAD_DISADVANTAGE = 0
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
@@ -180,6 +183,8 @@ class ActorCriticModel(tf.keras.Model):
         # executes call() under the hood (on the first invocation)
         logits, value = self.predict_on_batch(obs)
         # print("Logits:", logits)
+        if LOGITS_MAX:
+            logits = tf.clip_by_value(logits, LOGITS_MIN, LOGITS_MAX)
 
         # Same comment applies: should really just be "predict"
         action = self.dist.predict_on_batch(logits)
@@ -330,6 +335,8 @@ class SnakesA2C(Snakes):
         weighted_sparse_ce = kls.SparseCategoricalCrossentropy(from_logits=True)
         # policy loss is defined by policy gradients, weighted by advantages
         # note: we only calculate the loss on the actions we've actually taken
+        # pl = weighted_sparse_ce(actions[0:1], logits[0:1], sample_weight=advantages[0:1])
+        # print("policy loss", pl, actions[0:1], logits[0:1], advantages[0:1])
         policy_loss = weighted_sparse_ce(actions, logits, sample_weight=advantages)
         if BUGGY:
             entropy_loss = kls.categorical_crossentropy(logits, logits, from_logits=True)
@@ -337,6 +344,8 @@ class SnakesA2C(Snakes):
             # print("Policy loss", policy_loss)
             # entropy loss can be calculated via CE over itself
             probabilities = tf.nn.softmax(logits)
+            # el = kls.categorical_crossentropy(probabilities[0:1], probabilities[0:1])
+            # print("entropy loss", el, probabilities[0:1])
             entropy_loss = kls.categorical_crossentropy(probabilities, probabilities)
         # print("Entropy loss", entropy_loss)
         # here signs are flipped because optimizer minimizes
@@ -505,6 +514,7 @@ class SnakesA2C(Snakes):
                     loss = self._model_train.train_on_batch(
                         input,
                         [action_advantage_batch, rewards_batch])
+                    # print("%d: %.9f = %.9f + %.9f" % (i, *loss))
 
             if debug and DEBUG_TRAIN and dii == i:
                 logits, _, values = self._model_train.action_value(input[dj:dj+1])
@@ -608,6 +618,9 @@ class SnakesA2C(Snakes):
                 reward = (rewards - mean) / var
             # Calculate the advantage = current reward - predicted reward
             advantage = rewards - self._old_values[h0]
+            if DEAD_DISADVANTAGE:
+                # Attempt to always punish dying
+                advantage[self._history_game0 != self._nr_games] -= DEAD_DISADVANTAGE
 
             old_action = self._old_action[h0]
 
@@ -641,4 +654,11 @@ class SnakesA2C(Snakes):
         if debug:
             print("New Value = %f, New Action = %d" % (all_values[self._debug_index], all_actions[self._debug_index]))
         pos = head + self.DIRECTIONS[all_actions]
+        crash = self._pit_empty[pos].nonzero()[0]
+        if crash.size:
+            rand = np.random.randint(4, size=crash.size, dtype=all_actions.dtype)
+            all_actions[crash] = rand
+            if debug and self._pit_empty[pos[self._debug_index]]:
+                print("New random Action = %d" % all_actions[self._debug_index])
+            pos[crash] = head[crash] + self.DIRECTIONS[rand]
         return pos
