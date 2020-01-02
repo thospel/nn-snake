@@ -269,7 +269,9 @@ class VisionFile(Vision):
 @dataclass
 class Rewards():
     apple: TYPE_FLOAT
-    crash: TYPE_FLOAT
+    wall:  TYPE_FLOAT
+    body:  TYPE_FLOAT
+    win:   TYPE_FLOAT
     move:  TYPE_FLOAT
     rand:  TYPE_FLOAT
     initial: TYPE_FLOAT
@@ -285,7 +287,9 @@ class Rewards():
     def parse(cls, str):
         rewards = {
             "apple":   None,
-            "crash":   None,
+            "wall":    None,
+            "body":    None,
+            "win":     None,
             "move":    None,
             "rand":    None,
             "initial": None
@@ -314,7 +318,9 @@ class Rewards():
     def default(cls):
         return cls.parse("""
 		apple:   1
-		crash: -10
+		wall:  -10
+		body:  -10
+		win:     1
 		# A small penalty for taking too long to get to an apple
 		move:   -0.001
 		# Small random disturbance to escape from loops
@@ -331,6 +337,7 @@ class MoveResult:
     won:          np.ndarray = None
     collided:     np.ndarray = None
     is_collision: np.ndarray = None
+    wall:         np.ndarray = None
     is_eat:       np.ndarray = None
     eaten:        np.ndarray = None
 
@@ -566,6 +573,7 @@ class Snakes:
                  history_pit = False,
                  point_image = False,
                  win_bonus = 1,
+                 wall_bonus = 0,
                  view_x = None, view_y = None,
                  debug = False, xy_apple = True, xy_head = True):
         if nr_snakes <= 0:
@@ -573,6 +581,7 @@ class Snakes:
 
         self.debug = debug
         self._win_bonus = win_bonus
+        self._wall_bonus = wall_bonus
         self._channels = channels
         self._history_channels = history_channels
         # Do we keep a cache of apple coordinates ?
@@ -586,6 +595,7 @@ class Snakes:
 
         self._nr_snakes = nr_snakes
         self._all_snakes = np.arange(nr_snakes, dtype=TYPE_INDEX)
+        self._empty = np.empty(0, dtype=TYPE_SNAKE)
 
         if history:
             if history < 0:
@@ -658,17 +668,20 @@ class Snakes:
         self._nr_games = np_empty(nr_snakes, TYPE_GAMES)
 
         # empty_pit is just the edges with a permanently empty playing field
-        self._pit_empty = np.ones((self.HEIGHT1, self.WIDTH1), dtype=TYPE_FLAG)
-        self._pit_empty[self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH] = 0
+        self._pit_empty0 = np.ones((self.HEIGHT1, self.WIDTH1), dtype=TYPE_FLAG)
+        self._pit_empty0[self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH] = 0
         # Easy way to check if a position is inside the pit
-        self._pit_flag = np.logical_not(self._pit_empty)
+        self._pit_flag = np.logical_not(self._pit_empty0)
+        self._pit_empty = self._pit_empty0.reshape(-1)
+        assert self._pit_empty.base is self._pit_empty0
+
         # self._field1 = np.ones((nr_snakes, self.HEIGHT1, self.WIDTH1), dtype=TYPE_FLAG)
 
         if channels == 1:
             # The playing field starts out as nr_snakes copies of the empty pit
             # Notice that we store in row major order, so use field[snake,y,x]
             # (This makes interpreting printouts a lot easier)
-            base = self._pit_empty.reshape(1,self.HEIGHT1,self.WIDTH1).repeat(nr_snakes, axis=0)
+            base = self._pit_empty0.reshape(1,self.HEIGHT1,self.WIDTH1).repeat(nr_snakes, axis=0)
             self._field1 = base
         else:
             # With edges as a rectangle
@@ -686,7 +699,7 @@ class Snakes:
             # Just the body (with edges, as a rectangle)
             self._field1 = base[:,:,:,CHANNEL_BODY]
             assert self._field1.base is base
-            self._field1[:] = self._pit_empty.astype(self._field1.dtype)
+            self._field1[:] = self._pit_empty0.astype(self._field1.dtype)
             # print(self._deep_field)
         # The body (without edges, as a rectangle)
         self._field0 = self._field1[:, self.VIEW_Y:self.VIEW_Y+self.HEIGHT, self.VIEW_X:self.VIEW_X+self.WIDTH]
@@ -708,7 +721,7 @@ class Snakes:
         self._history_apple0      = np_empty(nr_snakes, dtype=TYPE_UPOS)
         self._history_score       = np_empty(nr_snakes, dtype=TYPE_UPOS)
         self._history_game0       = np_empty(nr_snakes, dtype=TYPE_GAMES)
-        self._history_score_final = np_empty(history_shape, dtype=TYPE_UPOS)
+        self._history_score_final = np_empty(history_shape, dtype=TYPE_POS)
 
         if self._history_pit:
             if self._history_channels == 1:
@@ -1298,6 +1311,9 @@ class Snakes:
             won = move_result.won
             # Add the apple that the snake never got a chance to eat
             self._history_score_final[(self.nr_games(won)-1) % self.HISTORY, won] += self._win_bonus
+        if move_result.wall.size:
+            wall = move_result.wall
+            self._history_score_final[(self.nr_games(wall)-1) % self.HISTORY, wall] += self._wall_bonus
 
         frame0 = self.frame_then()
         if frame0 >= 0:
@@ -1373,11 +1389,19 @@ class Snakes:
             # "move_execute" itself will later set this flag to True again
             is_eat[won]       = False
 
+        collided = is_collision.nonzero()[0]
+        if self._wall_bonus != 0 and collided.size:
+            is_wall = self._pit_empty[pos[collided]]
+            wall = collided[is_wall.nonzero()[0]]
+        else:
+            wall = self._empty
+
         return MoveResult(
             is_win       = is_win,
             won          = won,
             is_collision = is_collision,
-            collided     = is_collision.nonzero()[0],
+            collided     = collided,
+            wall         = wall,
             is_eat       = is_eat,
         )
 
@@ -1598,8 +1622,9 @@ class Snakes:
         # Planners that care will have to test for <None> values or frame() or
         # override "run_start_results" with something that makes sense to them
         return MoveResult(collided = self._all_snakes,
+                          wall     = self._empty,
                           eaten    = self._all_snakes,
-                          won      = np.empty(0, dtype=TYPE_SNAKE))
+                          won      = self._empty)
 
 
     # We are done moving snakes. Report some statistics and cleanup

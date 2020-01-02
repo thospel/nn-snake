@@ -151,6 +151,7 @@ class ActorCriticModel(tf.keras.Model):
 
 
     # Typically gets called only once (on first evaluation)
+    @tf.function
     def call(self, inputs):
         # print("Call Model", flush=True)
         # traceback.print_stack()
@@ -247,6 +248,8 @@ class SnakesA2C(Snakes):
                  switch_period = 40,
                  greedy_period = 0,
                  batch_size    = BATCH_SIZE,
+                 win_bonus     = 1,
+                 wall_bonus    = 0,
                  **kwargs):
 
         if reward_file is None:
@@ -260,6 +263,7 @@ class SnakesA2C(Snakes):
             point_image = True
         if channels == 1 or history_channels == 1:
             point_image = True
+
         super().__init__(*args,
                          xy_head = xy_head,
                          xy_apple = xy_apple,
@@ -269,9 +273,10 @@ class SnakesA2C(Snakes):
                          point_image = point_image,
                          **kwargs)
 
-        # We subtract crash from the reward when a game ends.
-        # Compensate for that if we won
-        self._win_bonus += math.ceil(-self._rewards.crash / self._rewards.apple)
+        # We subtract rewards.body from the reward when a game ends.
+        # Compensate for that if we won (in units of apples)
+        self._win_bonus = math.ceil((self._rewards.win - self._rewards.body) / self._rewards.apple)
+        self._wall_bonus = math.floor((self._rewards.wall - self._rewards.body) / self._rewards.apple)
 
         self._single = single
         self._learning_rate = TYPE_FLOAT(learning_rate)
@@ -284,6 +289,7 @@ class SnakesA2C(Snakes):
         self._greedy_period = greedy_period
         self._batch_size = batch_size
         # self._eat_frame = np_empty(self.nr_snakes, TYPE_MOVES)
+        # with tf.Graph().as_default():
         self._model_run = ActorCriticModel(
             4,
             width  = self.WIDTH,
@@ -293,8 +299,8 @@ class SnakesA2C(Snakes):
             optimizer = ko.Adam(lr = self._learning_rate),
             # define separate losses for policy logits and value estimate
             loss = [self.loss_logits, self.loss_value])
-        #self._model_run.build((None, self.HEIGHT, self.WIDTH, CHANNELS))
-        #print(self._model_run.summary())
+        # self._model_run.build((None, self.HEIGHT, self.WIDTH, CHANNELS))
+        # print(self._model_run.summary())
         # self._model_train = ActorCriticModel(
         #    4,
         #    width = self.WIDTH,
@@ -353,11 +359,13 @@ class SnakesA2C(Snakes):
             lr *= self.nr_snakes
 
         log_action("Learning Rate", "%8.3f",  lr)
-        log_action("Discount",     "%13.3f",  self._discount)
-        log_action("ValueAlpha",  "%11.3f"  , self._value_weight)
-        log_action("EntropyBeta", "%10.3f"  , self._entropy_beta)
-        log_action("Reward apple",  "%9.3f",  self._rewards.apple)
-        log_action("Reward crash",  "%9.3f",  self._rewards.crash)
+        log_action("Discount",      "%13.3f",  self._discount)
+        log_action("ValueAlpha",    "%11.3f"  , self._value_weight)
+        log_action("EntropyBeta",   "%10.3f"  , self._entropy_beta)
+        log_action("Reward apple",   "%9.3f",  self._rewards.apple)
+        log_action("Reward body",   "%10.3f",  self._rewards.body)
+        log_action("Reward wall",   "%10.3f",  self._rewards.wall)
+        log_action("Reward win",    "%11.3f",  self._rewards.win)
         log_action("Reward move",   "%10.3f", self._rewards.move)
         log_action("Reward rand",   "%10.3f", self._rewards.rand)
         log_action("Reward init",   "%10.3f", self._rewards.initial)
@@ -400,7 +408,7 @@ class SnakesA2C(Snakes):
         self._loss = None
 
 
-    def fit(self, old_action, advantage, rewards):
+    def fit(self, display, old_action, advantage, rewards):
         debug = self.debug
 
         if FIT:
@@ -477,13 +485,15 @@ class SnakesA2C(Snakes):
                 # of tensorflow (2.0)
                 # This works badly if batch_size is the standard 32
                 # (it both runs very slow and it converges terrbily)
+                # tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=display._tb_dir, histogram_freq=1)
                 history = self._model_train.fit(
                     x = input,
                     y = [action_advantage_batch, rewards_batch],
                     batch_size = self._batch_size,
                     epochs = EPOCHS,
                     shuffle = True,
-                    verbose = 0
+                    # callbacks = [tensorboard_callback],
+                    verbose = 2
                 )
                 history = history.history
                 # print(history)
@@ -576,10 +586,7 @@ class SnakesA2C(Snakes):
         all_values  = np.concatenate(all_values,  axis=None)
         all_actions = np.concatenate(all_actions, axis=None)
 
-        if h0 is None:
-            if self.frame() == 0:
-                self._model_run.summary()
-        else:
+        if h0 is not None:
             #reward_moves = np.random.uniform(
             #    self._rewards.move - self._rewards.rand /2,
             #    self._rewards.move + self._rewards.rand /2)
@@ -592,7 +599,7 @@ class SnakesA2C(Snakes):
             rewards += np.where(self._history_game0 == self._nr_games,
                                 # Bootstrap from discounted best estimate
                                 (all_values + reward_moves) * self._discount,
-                                self._rewards.crash)
+                                self._rewards.body)
 
             if NORMALIZE and self.nr_snakes > 1:
                 mean = rewards.mean()
@@ -614,7 +621,17 @@ class SnakesA2C(Snakes):
                        advantage[self._debug_index],
                        self._history_game0[self._debug_index],
                        self._nr_games[self._debug_index]))
-            self.fit(old_action, advantage, rewards)
+            self.fit(display, old_action, advantage, rewards)
+            if h0 == 0 and self.frame() == self._history:
+                lines = []
+                def printlm(line):
+                    nonlocal lines
+                    lines.append(line)
+                self._model_run.summary(print_fn=printlm)
+                summary = "\n".join(lines)
+                print(summary)
+                display.log_graph(self._model_train, summary)
+
 
         self._old_values[h] = all_values
         if self.frame() < self._greedy_period:

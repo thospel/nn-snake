@@ -132,10 +132,11 @@ class Display:
             # Strictly speaking gmtime would be less ambiguous, but humans seem
             # to prefer local time for some reason. Go figure.
             when = time.strftime("%Y%m%d_%H%M%S")
-            tb_dir = "%s/%dx%d/%s_%d" % (
+            self._tb_dir = "%s/%dx%d/%s_%d" % (
                 tensor_board, snakes.WIDTH, snakes.HEIGHT, when, os.getpid())
-            self._tb_writer = tf.summary.create_file_writer(tb_dir)
+            self._tb_writer = tf.summary.create_file_writer(self._tb_dir)
             self._tb_writer.set_as_default()
+            # tf.summary.trace_on(graph=True)
             self._log_tb_previous = None
         else:
             self._tb_writer = None
@@ -310,6 +311,25 @@ class Display:
         def log_action(name, format, value):
             tf.summary.scalar(name, value, step=frame)
         self._log_tb_previous = self._log_frame(log_action, self._log_tb_previous)
+
+
+    def log_graph(self, model, summary):
+        if not self._tb_writer:
+            return
+        tf.summary.text("Model Summary",
+                        "    " + summary.replace("\n", "\n    "),
+                        step=0)
+        tf.keras.utils.plot_model(model, "model.png",
+                                  show_shapes = True,
+                                  show_layer_names = True)
+        #with open("model.png", "rb") as fh:
+        #    image = tf.image.decode_png(fh.read(), channels=1)
+        #tf.summary.image("Model Plot", tf.expand_dims(image, 0), step=0)
+        # I was unable to find a way to get the actual graph for export
+        # tf.summary.keras_model('keras', model,step=0)
+        # tf.summary.graph(tf.get_default_graph())
+        # tf.summary.trace_export("Graph", step=self.snakes().frame())
+        # tf.summary.flush()
 
 
     def _log_frame(self, log_action, previous):

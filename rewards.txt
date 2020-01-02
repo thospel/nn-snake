@@ -1,5 +1,7 @@
 apple:   1
-crash: -10
+body:  -10
+wall:  -10
+win:     1
 # A small penalty for taking too long to get to an apple
 move:   -0.001
 # Small random disturbance to escape from loops

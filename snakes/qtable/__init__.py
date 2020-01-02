@@ -21,6 +21,7 @@ class SnakesQ(Snakes):
                  discount      = 0.9,
                  accelerated   = False,
                  symmetry      = False,
+                 wall_bonus    = 0,
                  **kwargs):
 
         if reward_file is None:
@@ -51,6 +52,7 @@ class SnakesQ(Snakes):
                          xy_head = xy_head,
                          view_x = view_x,
                          view_y = view_y,
+                         wall_bonus = 0,
                          **kwargs)
 
         self._single = single
@@ -262,7 +264,7 @@ class SnakesQ(Snakes):
                     i = self._vision_obj[y+0, x+0]
                     bit = SnakesQ.TYPE_QSTATE(1 << i)
                     hit = (n & bit) == bit
-                    q_table[hit,:, iterator.iterindex] = self._rewards.crash
+                    q_table[hit,:, iterator.iterindex] = self._rewards.body
 
         self._eat_frame.fill(self.frame())
 
@@ -308,12 +310,14 @@ class SnakesQ(Snakes):
 
         log_action("Vision", "%s", self._vision_obj.string(final_newline = False))
 
-        log_action("NrStates",      " %8d",   self.NR_STATES)
-        log_action("Learning Rate", "%8.3f",  lr)
+        log_action("NrStates",       " %8d",   self.NR_STATES)
+        log_action("Learning Rate",  "%8.3f",  lr)
         log_action("Discount",      "%13.3f", self._discount)
         log_action("Epsilon",       "%14.3f", 1/SnakesQ.EPSILON_INV)
-        log_action("Reward apple",  "%9.3f",  self._rewards.apple)
-        log_action("Reward crash",  "%9.3f",  self._rewards.crash)
+        log_action("Reward apple",   "%9.3f",  self._rewards.apple)
+        log_action("Reward body",   "%10.3f",  self._rewards.body)
+        # qtable ignores rewards.wall
+        log_action("Reward win",    "%11.3f",  self._rewards.win)
         log_action("Reward move",   "%10.3f", self._rewards.move)
         log_action("Reward rand",   "%10.3f", self._rewards.rand)
         log_action("Reward init",   "%10.3f", self._rewards.initial)
@@ -492,7 +496,7 @@ class SnakesQ(Snakes):
             rewards += np.where(self._history_game0 == self._nr_games,
                                 # Bootstrap from discounted best estimate
                                 (np.amax(q_row, axis=-1)+reward_moves) * self._discount,
-                                self._rewards.crash)
+                                self._rewards.body)
             if debug:
                 print("Reward %f (Old Game = %d, New Game = %d)" %
                       (rewards[self._debug_index],
