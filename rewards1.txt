@@ -1,5 +1,5 @@
 apple:   1
-wall:   -2
+wall:   -1
 body:   -1
 win:     1
 # A small penalty for taking too long to get to an apple

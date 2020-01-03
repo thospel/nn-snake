@@ -29,7 +29,9 @@ REGULARIZER=0
 EXTENDED = False
 LOGITS_MIN = -8
 LOGITS_MAX =  0
-DEAD_DISADVANTAGE = 0
+DEAD_DISADVANTAGE = 0.2
+ROTATE  = True
+AVOID_CRASH = False
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
@@ -387,6 +389,7 @@ class SnakesA2C(Snakes):
             log_action("Loss/Logits", "%10.3f", self._loss[1])
             log_action("Loss/Value",  "%11.3f", self._loss[2])
 
+
     def input_equal(self, offset, constructed, deep):
         if np.array_equal(constructed, deep):
             return
@@ -414,11 +417,14 @@ class SnakesA2C(Snakes):
 
         self._old_action = [None] * self.HISTORY
         self._old_values = [None] * self.HISTORY
+        self._old_rot    = [None] * self.HISTORY
         self._loss = None
 
 
-    def fit(self, display, old_action, advantage, rewards):
+    def fit(self, display, h0, advantage, rewards):
         debug = self.debug
+
+        old_action = self._old_action[h0]
 
         if FIT:
             batch_size = self.nr_snakes
@@ -434,6 +440,16 @@ class SnakesA2C(Snakes):
 
         di, dj = divmod(self._debug_index, batch_size)
         dii = di * batch_size
+
+        if ROTATE:
+            # rot = np.random.randint(4, size=1)
+            rot = self._old_rot[h0]
+            # rot = 1
+            if rot:
+                old_action += rot
+                old_action &= Snakes.DIRECTIONS_MASK
+        else:
+            rot = 0
 
         action_advantage = np.stack((old_action, advantage), axis=1)
 
@@ -468,11 +484,14 @@ class SnakesA2C(Snakes):
                 print(input[dj,:,:,CHANNEL_HEAD].astype(np.int8))
                 print(input[dj,:,:,CHANNEL_TAIL].astype(np.int8))
                 print(input[dj,:,:,CHANNEL_APPLE].astype(np.int8))
+            if rot:
+                input = np.rot90(input, k=rot, axes=(1, 2))
             if debug and DEBUG_TRAIN and dii == i:
                 logits, _, values = self._model_train.action_value(input[dj:dj+1])
-                p = np.exp(logits[dj])/sum(np.exp(logits[dj]))
+                logits = np.roll(logits[dj], rot)
+                p = np.exp(logits)/sum(np.exp(logits))
                 print("Value  Before Train", values[dj])
-                print("Logits Before Train", logits[dj], "p", p)
+                print("Logits Before Train", logits, "p", p)
 
             # print(self._model_train.metrics_names)
             # print(channels.shape)
@@ -518,9 +537,10 @@ class SnakesA2C(Snakes):
 
             if debug and DEBUG_TRAIN and dii == i:
                 logits, _, values = self._model_train.action_value(input[dj:dj+1])
-                p = np.exp(logits[dj])/sum(np.exp(logits[dj]))
+                logits = np.roll(logits[dj], rot)
+                p = np.exp(logits)/sum(np.exp(logits))
                 print("Value  After Train", values[dj])
-                print("Logits After Train", logits[dj], "p", p)
+                print("Logits After Train", logits, "p", p)
             assert len(loss) == 3
             # 0: total loss (output_1_loss + output_2_loss)
             # 1: output_1_loss
@@ -546,6 +566,12 @@ class SnakesA2C(Snakes):
 
         h  = self.frame_history_now()
         h0 = self.frame_history_then()
+
+        if ROTATE:
+            rot = np.random.randint(4, size=1)
+            # rot = 1
+        else:
+            rot = 0
 
         batch_size = self._batch_size
         di, dj = divmod(self._debug_index, batch_size)
@@ -579,6 +605,8 @@ class SnakesA2C(Snakes):
                 print(input[dj,:,:,CHANNEL_HEAD].astype(np.int8))
                 print(input[dj,:,:,CHANNEL_TAIL].astype(np.int8))
                 print(input[dj,:,:,CHANNEL_APPLE].astype(np.int8))
+            if rot:
+                input = np.rot90(input, k=rot, axes=(1, 2))
             # The returned values are of type numpy.ndarray
             # Except logits which is of type tf.Tensor as long as
             # action_value uses predict_on_batch() instead of predict()
@@ -586,8 +614,9 @@ class SnakesA2C(Snakes):
             del input
             # print(type(logits), type(actions), type(values))
             if debug and dii == i:
-                p = np.exp(logits[dj])/sum(np.exp(logits[dj]))
-                print("Logits", logits[dj], "p", p)
+                logits_debug = np.roll(logits[dj], -rot)
+                p = np.exp(logits_debug)/sum(np.exp(logits_debug))
+                print("Logits", logits_debug, "p", p)
             del logits
             # print(actions, values)
             all_actions.append(actions)
@@ -595,6 +624,9 @@ class SnakesA2C(Snakes):
 
         all_values  = np.concatenate(all_values,  axis=None)
         all_actions = np.concatenate(all_actions, axis=None)
+        if rot:
+            all_actions -= rot
+            all_actions &= Snakes.DIRECTIONS_MASK
 
         if h0 is not None:
             #reward_moves = np.random.uniform(
@@ -634,7 +666,7 @@ class SnakesA2C(Snakes):
                        advantage[self._debug_index],
                        self._history_game0[self._debug_index],
                        self._nr_games[self._debug_index]))
-            self.fit(display, old_action, advantage, rewards)
+            self.fit(display, h0, advantage, rewards)
             if h0 == 0 and self.frame() == self._history:
                 lines = []
                 def printlm(line):
@@ -646,19 +678,21 @@ class SnakesA2C(Snakes):
                 display.log_graph(self._model_train, summary)
 
 
-        self._old_values[h] = all_values
         if self.frame() < self._greedy_period:
             distance, head, head_x, head_y = self.apple_distance()
             all_actions = distance.argmax(axis=0)
         self._old_action[h] = all_actions
+        self._old_values[h] = all_values
+        self._old_rot[h]    = rot
         if debug:
             print("New Value = %f, New Action = %d" % (all_values[self._debug_index], all_actions[self._debug_index]))
         pos = head + self.DIRECTIONS[all_actions]
-        crash = self._pit_empty[pos].nonzero()[0]
-        if crash.size:
-            rand = np.random.randint(4, size=crash.size, dtype=all_actions.dtype)
-            all_actions[crash] = rand
-            if debug and self._pit_empty[pos[self._debug_index]]:
-                print("New random Action = %d" % all_actions[self._debug_index])
-            pos[crash] = head[crash] + self.DIRECTIONS[rand]
+        if AVOID_CRASH:
+            crash = self._field[self._all_snakes, pos].nonzero()[0]
+            if crash.size:
+                rand = np.random.randint(4, size=crash.size, dtype=all_actions.dtype)
+                all_actions[crash] = rand
+                if debug and self._field[self._debug_index, pos[self._debug_index]]:
+                    print("New random Action = %d" % all_actions[self._debug_index])
+                    pos[crash] = head[crash] + self.DIRECTIONS[rand]
         return pos
